@@ -1,0 +1,96 @@
+[project]
+name = "mini-aime"
+version = "0.1.0"
+description = "mini-aime"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.116.1",
+    "openai>=1.107.2",
+    "pydantic>=2.11.9",
+    "pydantic-settings>=2.10.1",
+    "pytest>=8.4.2",
+    "uvicorn>=0.35.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.1",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.13.0",
+]
+
+[tool.ruff]
+# Target Python version
+target-version = "py312"
+
+# Line length limit
+line-length = 100
+
+# Include file patterns
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+
+# Exclude directories and files
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Enabled rule sets
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings  
+    "F",      # Pyflakes
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "I",      # isort
+    "N",      # pep8-naming
+    "C90",    # mccabe complexity
+    "RUF",    # Ruff-specific rules
+]
+
+# Ignored rules
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Do not perform function calls in argument defaults (common in FastAPI)
+    "UP007",  # Use X | Y instead of Union[X, Y] (maintain backward compatibility)
+]
+
+# Per-file ignore rules
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+"tests/**/*.py" = [
+    "S101",   # Allow assert in tests
+    "S105",   # Allow hardcoded passwords in tests
+    "S106",   # Allow hardcoded passwords in tests
+]
+
+# Auto-fix configuration
+fixable = ["ALL"]
+unfixable = []
+
+# Complexity configuration
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+# Import sorting configuration
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+# Code formatting configuration
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
