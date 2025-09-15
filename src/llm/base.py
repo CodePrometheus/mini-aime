@@ -163,6 +163,16 @@ class BaseLLMClient(ABC):
         """Return a completion string for the given prompt."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def complete_with_functions(
+        self, 
+        messages: list[dict[str, str]], 
+        functions: list[dict[str, Any]],
+        **kwargs
+    ) -> dict[str, Any]:
+        """Complete with function calling support."""
+        raise NotImplementedError
+
     async def complete_with_context(self, messages: list[dict[str, str]]) -> str:
         """Complete with conversation context (multi-round chat)."""
         # Default implementation: concatenate messages into single prompt
@@ -239,4 +249,47 @@ class OpenAICompatibleClient(BaseLLMClient):
             return resp.choices[0].message.content or ""
         except Exception as e:
             logger.debug(f"OpenAI API call with context failed: {e!s}")
+            raise e
+
+    async def complete_with_functions(
+        self, 
+        messages: list[dict[str, str]], 
+        functions: list[dict[str, Any]],
+        **kwargs
+    ) -> dict[str, Any]:
+        """Complete with function calling support using DeepSeek API."""
+        try:
+            # DeepSeek 使用 'tools' 参数而不是 'functions'
+            resp: ChatCompletion = await self._client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                tools=functions,
+                tool_choice="auto",  # 让模型自动决定是否调用函数
+                temperature=0.1,  # 函数调用时使用较低温度
+                **kwargs
+            )
+            
+            choice = resp.choices[0]
+            message = choice.message
+            
+            # 检查是否有函数调用
+            if message.tool_calls:
+                tool_call = message.tool_calls[0]  # 取第一个函数调用
+                return {
+                    "function_call": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    },
+                    "content": message.content,
+                    "finish_reason": choice.finish_reason
+                }
+            else:
+                # 没有函数调用，返回普通文本响应
+                return {
+                    "content": message.content or "",
+                    "finish_reason": choice.finish_reason
+                }
+                
+        except Exception as e:
+            logger.debug(f"OpenAI API call with functions failed: {e!s}")
             raise e

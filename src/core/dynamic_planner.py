@@ -1,4 +1,4 @@
-"""Dynamic task planner with real-time adaptation capabilities."""
+"""具备实时自适应能力的动态任务规划器。"""
 
 import json
 import uuid
@@ -10,7 +10,7 @@ from .models import ExecutionStep, Task, TaskStatus
 
 
 class PlannerConfig:
-    """Configuration for Dynamic Planner behavior."""
+    """动态规划器的行为配置。"""
 
     def __init__(
         self,
@@ -28,7 +28,7 @@ class PlannerConfig:
 
 
 class DynamicPlanner:
-    """Dynamic task planner with real-time adaptation and intelligent decomposition."""
+    """动态任务规划器，支持实时自适应与智能分解。"""
 
     def __init__(self, llm_client: BaseLLMClient, config: PlannerConfig | None = None):
         self.llm = llm_client
@@ -42,19 +42,19 @@ class DynamicPlanner:
         user_feedback: str | None = None
     ) -> tuple[list[Task], Task | None]:
         """
-        Core method: Dynamic planning and task dispatch.
+        核心方法：动态规划与任务派发。
 
-        Analyzes current goal, task state, and execution history to generate
-        an updated task plan and select the next action to execute.
+        基于当前目标、任务状态与执行历史进行分析，生成更新后的任务计划，
+        并选择下一步要执行的任务。
 
         Args:
-            goal: User goal description
-            current_tasks: Current task list
-            execution_history: Recent execution history
-            user_feedback: Optional user feedback for interactive planning
+            goal: 用户目标描述
+            current_tasks: 当前任务列表
+            execution_history: 最近的执行历史
+            user_feedback: 可选的用户反馈（用于交互式规划）
 
         Returns:
-            Tuple of (updated_task_list, next_task_to_execute)
+            (更新后的任务列表, 下一步要执行的任务)
         """
         self.goal = goal
         self.task_list = current_tasks
@@ -115,19 +115,19 @@ class DynamicPlanner:
         user_feedback: str | None = None
     ) -> tuple[list[Task], list[Task]]:
         """
-        Batch planning method that identifies multiple tasks for parallel execution.
-        
-        This method extends the basic plan_and_dispatch to identify and return
-        multiple tasks that can be executed in parallel, improving system throughput.
-        
+        批量规划方法：识别可并行执行的多个任务。
+
+        该方法在基础规划的基础上，进一步识别并返回可并行的任务集合，
+        以提升系统吞吐量。
+
         Args:
-            goal: User goal description
-            current_tasks: Current task list
-            execution_history: Recent execution history
-            max_parallel: Maximum number of parallel tasks (uses config default if None)
-            
+            goal: 用户目标描述
+            current_tasks: 当前任务列表
+            execution_history: 最近的执行历史
+            max_parallel: 并行任务数量上限（为 None 时使用配置默认值）
+
         Returns:
-            Tuple of (updated_task_list, list_of_parallel_tasks)
+            (更新后的任务列表, 可并行执行的任务列表)
         """
         max_parallel = max_parallel or self.config.max_parallel_tasks
         
@@ -153,10 +153,9 @@ class DynamicPlanner:
         max_parallel: int
     ) -> list[Task]:
         """
-        Identify tasks that can be executed in parallel with the primary task.
-        
-        Uses LLM to analyze task dependencies and resource conflicts to determine
-        which tasks can safely run concurrently.
+        识别可与主要任务并行执行的任务。
+
+        使用 LLM 分析任务依赖与资源冲突，从而判断哪些任务可以安全并行。
         """
         if max_parallel <= 1:
             return [primary_task]
@@ -207,7 +206,7 @@ class DynamicPlanner:
         primary_task: Task, 
         max_parallel: int
     ) -> dict:
-        """Use LLM to analyze which tasks can be executed in parallel."""
+        """使用 LLM 分析哪些任务可以并行执行。"""
         
         task_descriptions = []
         for task in pending_tasks:
@@ -252,7 +251,7 @@ class DynamicPlanner:
     def _build_planning_messages(
         self, goal: str, current_tasks: list[Task], execution_history: list[ExecutionStep]
     ) -> list[dict[str, str]]:
-        """Build conversation messages for multi-round planning context."""
+        """构建用于多轮规划上下文的对话消息。"""
         messages = [{"role": "system", "content": self._get_planner_system_prompt()}]
 
         # Add planning history context
@@ -275,7 +274,7 @@ class DynamicPlanner:
         return messages
 
     def _get_planner_system_prompt(self) -> str:
-        """Generate system prompt for the dynamic planner."""
+        """生成动态规划器的系统提示。"""
         return """你是一个动态任务规划器，能够基于实时反馈自适应地分解目标。
 
 核心原则：
@@ -321,7 +320,7 @@ class DynamicPlanner:
     def _format_planning_request(
         self, goal: str, current_tasks: list[Task], execution_history: list[ExecutionStep]
     ) -> str:
-        """Format the current planning request."""
+        """格式化当前的规划请求文本。"""
         task_summary = self._format_task_tree(current_tasks)
         history_summary = self._format_execution_history(execution_history[-5:])  # Last 5 steps
 
@@ -344,7 +343,7 @@ class DynamicPlanner:
 请提供你的分析和任务更新。"""
 
     def _format_task_tree(self, tasks: list[Task], indent: int = 0) -> str:
-        """Format task tree as readable text."""
+        """以可读文本格式化任务树。"""
         if not tasks:
             return "暂无任务 - 需要初始分解"
 
@@ -366,7 +365,7 @@ class DynamicPlanner:
         return "\n".join(lines)
 
     def _format_execution_history(self, history: list[ExecutionStep]) -> str:
-        """Format execution history for context."""
+        """格式化执行历史以便上下文理解。"""
         if not history:
             return "暂无执行历史"
 
@@ -381,7 +380,7 @@ class DynamicPlanner:
         return "\n".join(lines)
 
     def _format_planning_history(self) -> str:
-        """Format planning history for context."""
+        """格式化规划历史以便上下文理解。"""
         if not self.planning_history:
             return "暂无之前的规划决策"
 
@@ -396,7 +395,7 @@ class DynamicPlanner:
         return "\n".join(lines)
 
     def _apply_task_updates(self, current_tasks: list[Task], updates: list[dict]) -> list[Task]:
-        """Apply LLM-generated task updates to the task tree."""
+        """将 LLM 生成的任务更新应用到任务树。"""
         # Create a working copy
         task_dict = self._build_task_dict(current_tasks)
         updated_tasks = current_tasks.copy()
@@ -440,7 +439,7 @@ class DynamicPlanner:
         return updated_tasks
 
     def _build_task_dict(self, tasks: list[Task]) -> dict[str, Task]:
-        """Build a flat dictionary of all tasks for easy lookup."""
+        """构建任务字典以便快速查找。"""
         task_dict = {}
 
         def add_tasks(task_list: list[Task]):
@@ -453,7 +452,7 @@ class DynamicPlanner:
         return task_dict
 
     def _create_task_from_dict(self, task_data: dict) -> Task:
-        """Create a Task object from dictionary data."""
+        """根据字典数据创建 Task 对象。"""
         return Task(
             id=task_data.get("id", f"task_{uuid.uuid4().hex[:8]}"),
             description=task_data.get("description", ""),
@@ -465,7 +464,7 @@ class DynamicPlanner:
         )
 
     def _remove_task_from_tree(self, tasks: list[Task], task_id: str) -> bool:
-        """Remove a task from the task tree."""
+        """从任务树中移除指定任务。"""
         for i, task in enumerate(tasks):
             if task.id == task_id:
                 tasks.pop(i)
@@ -475,7 +474,7 @@ class DynamicPlanner:
         return False
 
     def _select_next_task(self, tasks: list[Task], next_action: dict | None) -> Task | None:
-        """Select the next task to execute based on LLM recommendation."""
+        """基于 LLM 的推荐选择下一步要执行的任务。"""
         if not next_action:
             return self._find_first_pending_task(tasks)
 
@@ -490,7 +489,7 @@ class DynamicPlanner:
         return self._find_first_pending_task(tasks)
 
     def _find_task_by_id(self, tasks: list[Task], task_id: str) -> Task | None:
-        """Find a task by ID in the task tree."""
+        """在任务树中按照 ID 查找任务。"""
         for task in tasks:
             if task.id == task_id:
                 return task
@@ -501,7 +500,7 @@ class DynamicPlanner:
         return None
 
     def _find_first_pending_task(self, tasks: list[Task]) -> Task | None:
-        """Find the first pending task in the tree (depth-first)."""
+        """在任务树中按深度优先查找第一个待执行任务。"""
         for task in tasks:
             if task.status == TaskStatus.PENDING:
                 return task
@@ -512,7 +511,7 @@ class DynamicPlanner:
         return None
 
     def _optional_quick_clarification(self, goal: str) -> str | None:
-        """Optional quick clarification with user (if enabled)."""
+        """可选的快速澄清（在启用时与用户交互）。"""
         if not self.config.enable_user_clarification:
             return None
 
@@ -528,10 +527,9 @@ class DynamicPlanner:
         user_feedback: str | None = None
     ) -> str | None:
         """
-        Progressive user guidance through gentle questioning.
-        
-        Analyzes the current situation to identify ambiguous aspects and guides
-        the user to provide more specific information through strategic questions.
+        通过温和提问进行渐进式用户引导。
+
+        分析当前局面以识别模糊点，并通过策略性问题引导用户补充更具体的信息。
         """
         if not self.config.enable_user_interaction:
             return None
@@ -564,7 +562,7 @@ class DynamicPlanner:
         current_tasks: list[Task], 
         execution_history: list[ExecutionStep]
     ) -> dict[str, Any]:
-        """Analyze the current situation to identify ambiguous aspects."""
+        """分析当前局面以识别需要澄清的模糊点。"""
         
         task_summary = self._format_task_tree(current_tasks)
         history_summary = self._format_execution_history(execution_history[-3:])
@@ -612,7 +610,7 @@ class DynamicPlanner:
         ambiguity_analysis: dict[str, Any],
         user_feedback: str | None = None
     ) -> list[str]:
-        """Generate strategic guiding questions based on ambiguity analysis."""
+        """基于模糊点分析生成策略性引导问题。"""
         
         if not ambiguity_analysis.get("needs_guidance", False):
             return []
@@ -661,14 +659,14 @@ class DynamicPlanner:
 
     async def _simulate_user_guidance(self, questions: list[str]) -> str | None:
         """
-        Simulate user guidance interaction.
-        
-        In a real implementation, this would:
-        1. Present questions to the user through the UI
-        2. Wait for user responses
-        3. Synthesize the responses into actionable guidance
-        
-        For now, we return None to indicate no guidance was obtained.
+        模拟用户引导交互。
+
+        实际实现中应：
+        1. 通过界面向用户展示问题
+        2. 等待用户回答
+        3. 将回答综合为可执行的指导信息
+
+        目前返回 None，表示未获得额外指导。
         """
         # TODO: Implement actual user interaction in the application layer
         # This could be through:
@@ -679,7 +677,7 @@ class DynamicPlanner:
         return None
 
     def _fallback_planning(self, goal: str, current_tasks: list[Task]) -> list[Task]:
-        """Simple fallback planning when LLM fails."""
+        """LLM 失败时的简易降级规划。"""
         if current_tasks:
             return current_tasks
 
@@ -695,7 +693,7 @@ class DynamicPlanner:
         ]
 
     def get_current_state(self) -> dict[str, Any]:
-        """Get current planner state for monitoring."""
+        """获取当前规划器状态（用于监控）。"""
         return {
             "goal": self.goal,
             "task_count": len(self.task_list),
@@ -709,7 +707,7 @@ class DynamicPlanner:
         }
 
     def _get_all_tasks(self) -> list[Task]:
-        """Get all tasks flattened from the tree."""
+        """从任务树拉平成列表以获取全部任务。"""
         all_tasks = []
 
         def collect_tasks(task_list: list[Task]):

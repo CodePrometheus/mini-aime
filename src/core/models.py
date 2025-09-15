@@ -1,15 +1,15 @@
-"""Core data models for the mini-aime system."""
+"""mini-aime 系统的核心数据模型。"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
 
 class TaskStatus(Enum):
-    """Task execution status."""
+    """任务执行状态。"""
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -19,7 +19,7 @@ class TaskStatus(Enum):
 
 @dataclass
 class Task:
-    """Task data structure with hierarchical support."""
+    """支持层级结构的任务数据结构。"""
 
     id: str
     description: str
@@ -30,14 +30,14 @@ class Task:
     updated_at: datetime = field(default_factory=datetime.now)
 
     def __post_init__(self):
-        """Initialize subtasks list if None."""
+        """当子任务列表为 None 时进行初始化。"""
         if self.subtasks is None:
             self.subtasks = []
 
 
 @dataclass
 class ExecutionStep:
-    """Single execution step in ReAct cycle."""
+    """ReAct 循环中的单步执行记录。"""
 
     thought: str
     action: str
@@ -48,7 +48,7 @@ class ExecutionStep:
 
 @dataclass
 class AgentConfig:
-    """Agent configuration with tools and persona."""
+    """智能体配置（工具与人格设定）。"""
 
     task: Task
     persona: str
@@ -60,7 +60,7 @@ class AgentConfig:
 
 
 class TaskRequest(BaseModel):
-    """Task request model for API endpoints."""
+    """任务请求模型（用于 API）。"""
 
     goal: str = Field(..., description="User goal description")
     max_parallel_agents: int = Field(default=3, ge=1, le=10, description="Maximum parallel agents")
@@ -68,7 +68,7 @@ class TaskRequest(BaseModel):
 
 
 class TaskResponse(BaseModel):
-    """Task response model for API endpoints."""
+    """任务响应模型（用于 API）。"""
 
     task_id: str = Field(..., description="Task ID")
     status: str = Field(..., description="Task status")
@@ -77,7 +77,7 @@ class TaskResponse(BaseModel):
 
 
 class ProgressUpdate(BaseModel):
-    """Progress update model for real-time status tracking."""
+    """进度更新模型（用于实时状态跟踪）。"""
 
     task_id: str = Field(..., description="Task ID")
     agent_id: str | None = Field(None, description="Agent ID")
@@ -88,7 +88,7 @@ class ProgressUpdate(BaseModel):
 
 
 class SystemState(BaseModel):
-    """System state model for monitoring overall progress."""
+    """系统状态模型（用于整体进度监控）。"""
 
     task_count: int = Field(default=0, description="Total number of tasks")
     active_agents: list[str] = Field(default_factory=list, description="Active agent IDs")
@@ -101,7 +101,7 @@ class SystemState(BaseModel):
 
 
 class AgentReport(BaseModel):
-    """Agent final execution report."""
+    """智能体最终执行报告。"""
 
     agent_id: str = Field(..., description="Agent ID")
     task_id: str = Field(..., description="Task ID")
@@ -116,7 +116,7 @@ class AgentReport(BaseModel):
 
 
 class ToolBundle(BaseModel):
-    """Tool bundle configuration model."""
+    """工具包配置模型。"""
 
     name: str = Field(..., description="Bundle name")
     description: str = Field(..., description="Bundle description")

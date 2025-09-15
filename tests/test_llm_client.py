@@ -1,4 +1,4 @@
-"""Tests for LLM client functionality."""
+"""LLM 客户端功能的测试用例。"""
 
 from unittest.mock import AsyncMock, Mock
 
@@ -8,10 +8,10 @@ from src.llm.base import BaseLLMClient, OpenAICompatibleClient, RetryConfig
 
 
 class TestBaseLLMClient:
-    """Test base LLM client functionality."""
+    """基础 LLM 客户端功能测试。"""
 
     def test_retry_config_defaults(self):
-        """Test default retry configuration."""
+        """测试：重试配置默认值。"""
         config = RetryConfig()
         assert config.max_attempts == 3
         assert config.initial_delay == 1.0
@@ -20,7 +20,7 @@ class TestBaseLLMClient:
         assert config.jitter is True
 
     def test_error_classification(self):
-        """Test error type classification."""
+        """测试：错误类型分类。"""
         client = Mock(spec=BaseLLMClient)
         client._classify_error = BaseLLMClient._classify_error.__get__(client)
 
@@ -41,7 +41,7 @@ class TestBaseLLMClient:
         assert client._classify_error(Exception("server error")) == "retryable"
 
     def test_delay_calculation(self):
-        """Test retry delay calculation."""
+        """测试：重试延迟计算。"""
         config = RetryConfig(initial_delay=1.0, exponential_base=2.0, jitter=False)
         client = Mock(spec=BaseLLMClient)
         client.retry_config = config
@@ -54,7 +54,7 @@ class TestBaseLLMClient:
 
     @pytest.mark.asyncio
     async def test_complete_with_context_default(self):
-        """Test default complete_with_context implementation."""
+        """测试：complete_with_context 的默认实现。"""
         client = Mock(spec=BaseLLMClient)
         client.complete = AsyncMock(return_value="test response")
         client.complete_with_context = BaseLLMClient.complete_with_context.__get__(client)
@@ -81,7 +81,7 @@ class TestBaseLLMClient:
 
 
 class MockOpenAIClient:
-    """Mock OpenAI client for testing."""
+    """用于测试的 Mock OpenAI 客户端。"""
 
     def __init__(self, response_content="test response", should_fail=False):
         self.response_content = response_content
@@ -102,11 +102,11 @@ class MockOpenAIClient:
 
 
 class TestOpenAICompatibleClient:
-    """Test OpenAI compatible client."""
+    """OpenAI 兼容客户端测试。"""
 
     @pytest.mark.asyncio
     async def test_complete_success(self):
-        """Test successful completion."""
+        """测试：补全成功。"""
         mock_openai = MockOpenAIClient("Hello world")
 
         client = OpenAICompatibleClient(api_key="test", base_url="test")
@@ -119,7 +119,7 @@ class TestOpenAICompatibleClient:
 
     @pytest.mark.asyncio
     async def test_complete_with_context_success(self):
-        """Test successful context completion."""
+        """测试：带上下文的补全成功。"""
         mock_openai = MockOpenAIClient("Context response")
 
         client = OpenAICompatibleClient(api_key="test", base_url="test")
@@ -139,7 +139,7 @@ class TestOpenAICompatibleClient:
 
     @pytest.mark.asyncio
     async def test_complete_failure(self):
-        """Test completion failure handling."""
+        """测试：补全失败时的处理。"""
         mock_openai = MockOpenAIClient(should_fail=True)
 
         client = OpenAICompatibleClient(api_key="test", base_url="test")
@@ -150,7 +150,7 @@ class TestOpenAICompatibleClient:
 
     @pytest.mark.asyncio
     async def test_validate_connection_success(self):
-        """Test connection validation success."""
+        """测试：连接校验成功。"""
         mock_openai = MockOpenAIClient("ok")
 
         client = OpenAICompatibleClient(api_key="test", base_url="test")
@@ -161,7 +161,7 @@ class TestOpenAICompatibleClient:
 
     @pytest.mark.asyncio
     async def test_validate_connection_failure(self):
-        """Test connection validation failure."""
+        """测试：连接校验失败。"""
         mock_openai = MockOpenAIClient(should_fail=True)
 
         client = OpenAICompatibleClient(api_key="test", base_url="test")
@@ -171,7 +171,7 @@ class TestOpenAICompatibleClient:
         assert result is False
 
     def test_token_count_estimation(self):
-        """Test token count estimation."""
+        """测试：token 计数估算。"""
         client = OpenAICompatibleClient(api_key="test", base_url="test")
 
         # Simple estimation: divide by 4

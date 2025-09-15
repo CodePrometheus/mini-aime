@@ -1,4 +1,4 @@
-"""Tests for Dynamic Planner functionality."""
+"""动态规划器功能的测试用例。"""
 
 import asyncio
 import json
@@ -11,7 +11,7 @@ from src.llm.base import BaseLLMClient
 
 
 class MockLLMClient(BaseLLMClient):
-    """Mock LLM client for testing."""
+    """用于测试的模拟 LLM 客户端。"""
 
     def __init__(self, response_data=None):
         super().__init__()
@@ -42,33 +42,47 @@ class MockLLMClient(BaseLLMClient):
         }
 
     async def complete(self, prompt: str) -> str:
-        """Mock completion that returns JSON response."""
+        """返回 JSON 响应的模拟补全。"""
         import json
 
         return json.dumps(self.response_data)
 
     async def complete_with_context(self, messages: list) -> str:
-        """Mock context completion."""
+        """带上下文的模拟补全。"""
         import json
 
         return json.dumps(self.response_data)
+    
+    async def complete_with_functions(
+        self, 
+        messages: list, 
+        functions: list,
+        **kwargs
+    ) -> dict:
+        """Function calling 的模拟实现。"""
+        # 返回普通文本响应（不调用函数）
+        content = await self.complete("")
+        return {
+            "content": content,
+            "finish_reason": "stop"
+        }
 
 
 @pytest.fixture
 def mock_llm():
-    """Fixture providing mock LLM client."""
+    """提供模拟 LLM 客户端的测试夹具。"""
     return MockLLMClient()
 
 
 @pytest.fixture
 def planner(mock_llm):
-    """Fixture providing Dynamic Planner with mock LLM."""
+    """提供带有模拟 LLM 的动态规划器实例。"""
     return DynamicPlanner(mock_llm, PlannerConfig())
 
 
 @pytest.mark.asyncio
 async def test_initial_planning(planner):
-    """Test initial task decomposition."""
+    """测试：初始任务分解。"""
     goal = "Plan a 3-day Tokyo trip"
     current_tasks = []
     execution_history = []
@@ -85,7 +99,7 @@ async def test_initial_planning(planner):
 
 @pytest.mark.asyncio
 async def test_task_tree_operations(planner):
-    """Test task tree manipulation methods."""
+    """测试：任务树操作方法。"""
     # Create test tasks
     task1 = Task(id="task1", description="Main task", status=TaskStatus.PENDING, subtasks=[])
 
@@ -117,7 +131,7 @@ async def test_task_tree_operations(planner):
 
 @pytest.mark.asyncio
 async def test_planner_state_tracking(planner):
-    """Test planner state monitoring."""
+    """测试：规划器状态监控。"""
     goal = "Test goal"
     tasks = []
     history = []
@@ -134,7 +148,7 @@ async def test_planner_state_tracking(planner):
 
 @pytest.mark.asyncio
 async def test_fallback_planning():
-    """Test fallback behavior when LLM fails."""
+    """测试：LLM 失败时的降级行为。"""
     # Create mock that raises exception
     failing_llm = Mock(spec=BaseLLMClient)
     failing_llm.complete_with_context.side_effect = Exception("LLM failed")
@@ -154,7 +168,7 @@ async def test_fallback_planning():
 
 @pytest.mark.asyncio
 async def test_task_updates_application(mock_llm):
-    """Test applying LLM-generated task updates."""
+    """测试：应用 LLM 生成的任务更新。"""
     # Setup mock with task modification response
     mock_llm.response_data = {
         "analysis": "Need to modify existing task",
@@ -203,7 +217,7 @@ async def test_task_updates_application(mock_llm):
 
 
 def test_planner_config():
-    """Test planner configuration options."""
+    """测试：规划器配置项。"""
     config = PlannerConfig(
         enable_user_clarification=True,
         max_clarification_rounds=3,
@@ -219,7 +233,7 @@ def test_planner_config():
 
 @pytest.mark.asyncio
 async def test_plan_and_dispatch_batch():
-    """Test batch planning for parallel execution."""
+    """测试：并行执行的批量规划。"""
     # Mock LLM responses for planning and parallel analysis
     class BatchMockLLMClient(BaseLLMClient):
         def __init__(self):
@@ -266,6 +280,10 @@ async def test_plan_and_dispatch_batch():
         
         async def complete_with_context(self, messages: list) -> str:
             return await self.complete("")
+        
+        async def complete_with_functions(self, messages: list, functions: list, **kwargs) -> dict:
+            content = await self.complete("")
+            return {"content": content, "finish_reason": "stop"}
     
     planner = DynamicPlanner(BatchMockLLMClient())
     
@@ -284,7 +302,7 @@ async def test_plan_and_dispatch_batch():
 
 @pytest.mark.asyncio 
 async def test_parallel_execution_with_dependencies():
-    """Test parallel execution analysis with task dependencies."""
+    """测试：带依赖关系的并行执行分析。"""
     existing_tasks = [
         Task(id="task1", description="Book hotel", status=TaskStatus.PENDING),
         Task(id="task2", description="Check hotel booking", status=TaskStatus.PENDING),
@@ -318,6 +336,10 @@ async def test_parallel_execution_with_dependencies():
         
         async def complete_with_context(self, messages: list) -> str:
             return await self.complete("")
+        
+        async def complete_with_functions(self, messages: list, functions: list, **kwargs) -> dict:
+            content = await self.complete("")
+            return {"content": content, "finish_reason": "stop"}
     
     planner = DynamicPlanner(DependencyMockLLMClient())
     planner.task_list = existing_tasks
@@ -338,7 +360,7 @@ async def test_parallel_execution_with_dependencies():
 
 @pytest.mark.asyncio
 async def test_identify_parallel_tasks_single_task():
-    """Test parallel task identification with max_parallel=1."""
+    """测试：当 max_parallel=1 时的并行任务识别。"""
     primary_task = Task(id="task1", description="Main task", status=TaskStatus.PENDING)
     
     planner = DynamicPlanner(MockLLMClient())
@@ -354,7 +376,7 @@ async def test_identify_parallel_tasks_single_task():
 
 
 def test_progressive_user_guidance():
-    """Test progressive user guidance functionality."""
+    """测试：渐进式用户引导功能。"""
     config = PlannerConfig(enable_user_interaction=True)
     
     # Mock LLM responses for ambiguity analysis and question generation
@@ -388,7 +410,7 @@ def test_progressive_user_guidance():
 
 
 def test_user_interaction_disabled():
-    """Test that user interaction is disabled by default."""
+    """测试：默认情况下用户交互应为禁用。"""
     config = PlannerConfig(enable_user_interaction=False)
     llm_client = MockLLMClient()
     planner = DynamicPlanner(llm_client, config)
@@ -402,7 +424,7 @@ def test_user_interaction_disabled():
 
 
 def test_plan_and_dispatch_with_user_feedback():
-    """Test planning with user feedback."""
+    """测试：带用户反馈的规划。"""
     config = PlannerConfig(enable_user_interaction=True)
     
     # Mock successful planning response
