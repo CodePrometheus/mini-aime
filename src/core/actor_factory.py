@@ -1,17 +1,17 @@
 """基于 LangChain 工具的动态智能体工厂。"""
 
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List
 
-from langchain_community.tools import TavilySearchResults
-from langchain_core.tools import Tool, StructuredTool
-from langchain_openai import ChatOpenAI
+import requests
+from langchain_core.tools import Tool
+from langchain_tavily import TavilySearch
 from pydantic import BaseModel, Field
 
 from ..llm.base import BaseLLMClient
-from .models import Task, TaskStatus
 
 
 class TaskSpecification(BaseModel):
@@ -63,15 +63,20 @@ class ActorFactory:
             self.tool_bundles = {
                 "web_research": [],
                 "file_operations": [],
-                "data_processing": [],
-                "communication": []
+                "weather_services": [],
+                "data_processing": []
             }
     
     def _initialize_tool_bundles(self):
         """初始化工具包。"""
         
-        # 网络搜索工具
-        tavily_search = TavilySearchResults(
+        # 网络搜索工具 - 从环境变量读取API Key
+        tavily_api_key = os.getenv("TAVILY_API_KEY")
+        if not tavily_api_key:
+            raise ValueError("TAVILY_API_KEY environment variable is required")
+            
+        tavily_search = TavilySearch(
+            tavily_api_key=tavily_api_key,
             max_results=5,
             search_depth="advanced",
             include_answer=True,
@@ -98,13 +103,133 @@ class ActorFactory:
         
         def list_directory_func(directory_path: str) -> str:
             """列出目录内容。"""
-            import os
             try:
                 items = os.listdir(directory_path)
                 return f"目录 {directory_path} 内容:\n" + "\n".join(items)
             except Exception as e:
                 return f"列出目录失败: {str(e)}"
         
+        # 天气查询工具
+        def get_weather_func(city: str) -> str:
+            """获取指定城市的当前天气信息。"""
+            # 使用 WeatherAPI 的 API 来获取天气信息
+            api_key = os.getenv("WEATHER_API_KEY")
+            if not api_key:
+                return f"错误：未设置 WEATHER_API_KEY 环境变量，请在 .env 文件中配置"
+            
+            base_url = "http://api.weatherapi.com/v1/current.json"
+            params = {
+                'key': api_key,
+                'q': city,
+                'aqi': 'no'  # 不需要空气质量数据
+            }
+
+            try:
+                # 调用天气 API
+                response = requests.get(base_url, params=params, timeout=10)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    # 拿到天气和温度
+                    weather = data['current']['condition']['text']
+                    temperature = data['current']['temp_c']
+                    humidity = data['current']['humidity']
+                    wind_kph = data['current']['wind_kph']
+                    return f"城市 {city} 当前天气：{weather}，温度 {temperature}°C，湿度 {humidity}%，风速 {wind_kph} km/h"
+                else:
+                    return f"无法检索 {city} 的天气信息，API返回状态码: {response.status_code}"
+                    
+            except requests.exceptions.RequestException as e:
+                return f"获取 {city} 天气信息时网络请求失败: {str(e)}"
+            except Exception as e:
+                return f"获取 {city} 天气信息时发生错误: {str(e)}"
+        
+        # 货币转换（ExchangeRate-API）
+        def currency_convert_func(from_currency: str, to_currency: str, amount: float) -> str:
+            """使用 ExchangeRate-API 将金额从一种货币转换为另一种货币。"""
+            api_key = os.getenv("EXCHANGE_RATE_API_KEY")
+            if not api_key:
+                return "错误：未设置 EXCHANGE_RATE_API_KEY 环境变量，请在 .env 配置。"
+
+            base_url = f"https://v6.exchangerate-api.com/v6/{api_key}/pair/{from_currency.upper()}/{to_currency.upper()}/{amount}"
+            try:
+                resp = requests.get(base_url, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("result") == "success":
+                    rate = data.get("conversion_rate")
+                    converted = data.get("conversion_result")
+                    return (
+                        f"{amount} {from_currency.upper()} -> {converted} {to_currency.upper()} (rate: {rate})"
+                    )
+                else:
+                    return f"货币转换失败：{data.get('error-type') or data}"
+            except requests.RequestException as e:
+                return f"货币转换网络错误：{str(e)}"
+            except Exception as e:
+                return f"货币转换发生错误：{str(e)}"
+
+        # 时区查询（TimeZoneDB）
+        def get_timezone_func(zone: str | None = None, lat: float | None = None, lng: float | None = None) -> str:
+            """查询时区信息，支持按 IANA 区域名或经纬度。"""
+            api_key = os.getenv("TIMEZONEDB_API_KEY")
+            if not api_key:
+                return "错误：未设置 TIMEZONEDB_API_KEY 环境变量，请在 .env 配置。"
+
+            if zone:
+                params = {
+                    "key": api_key,
+                    "format": "json",
+                    "by": "zone",
+                    "zone": zone,
+                }
+            elif lat is not None and lng is not None:
+                params = {
+                    "key": api_key,
+                    "format": "json",
+                    "by": "position",
+                    "lat": lat,
+                    "lng": lng,
+                }
+            else:
+                return "错误：请提供 zone 或 (lat, lng)。"
+
+            try:
+                resp = requests.get("https://api.timezonedb.com/v2.1/get-time-zone", params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("status") == "OK":
+                    zone_name = data.get("zoneName")
+                    gmt_offset = data.get("gmtOffset")
+                    abbrev = data.get("abbreviation")
+                    local_time = data.get("formatted") or data.get("timestamp")
+                    return f"时区: {zone_name}, 偏移: {gmt_offset}, 简写: {abbrev}, 本地时间: {local_time}"
+                return f"时区查询失败：{data.get('message') or data}"
+            except requests.RequestException as e:
+                return f"时区查询网络错误：{str(e)}"
+            except Exception as e:
+                return f"时区查询发生错误：{str(e)}"
+
+        # 公共假期（Nager.Date）
+        def get_public_holidays_func(country_code: str, year: int) -> str:
+            """查询指定国家与年份的公共假期（Nager.Date）。"""
+            base_url = os.getenv("NAGER_DATE_BASE_URL", "https://date.nager.at")
+            url = f"{base_url}/api/v3/PublicHolidays/{year}/{country_code.upper()}"
+            try:
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, list):
+                    return f"返回格式异常：{data}"
+                # 简要汇总
+                items = [f"{item.get('date')} - {item.get('localName')} ({item.get('name')})" for item in data[:10]]
+                more = "" if len(data) <= 10 else f"，其余 {len(data) - 10} 条省略"
+                return "公共假期：\n" + "\n".join(items) + more
+            except requests.RequestException as e:
+                return f"公共假期查询网络错误：{str(e)}"
+            except Exception as e:
+                return f"公共假期查询发生错误：{str(e)}"
+
         # 数据处理工具
         def parse_json_func(json_string: str) -> str:
             """解析 JSON 字符串。"""
@@ -117,16 +242,9 @@ class ActorFactory:
         # 定义工具包
         self.tool_bundles = {
             "web_research": {
-                "tools": [
-                    tavily_search,
-                    Tool(
-                        name="extract_content",
-                        func=lambda url: f"从 {url} 提取的内容（模拟）",
-                        description="从网页URL提取结构化内容",
-                    )
-                ],
-                "description": "网络信息搜索和提取",
-                "use_cases": ["研究", "信息收集", "验证事实"]
+                "tools": [tavily_search],
+                "description": "网络信息搜索和研究",
+                "use_cases": ["信息搜索", "研究调研", "事实验证", "内容收集"]
             },
             
             "file_operations": {
@@ -147,8 +265,20 @@ class ActorFactory:
                         description="列出指定目录的所有文件和子目录",
                     )
                 ],
-                "description": "文件系统操作",
-                "use_cases": ["文档生成", "数据存储", "文件管理"]
+                "description": "文件系统操作和管理",
+                "use_cases": ["文档处理", "数据存储", "文件管理", "内容生成"]
+            },
+            
+            "weather_services": {
+                "tools": [
+                    Tool(
+                        name="get_weather",
+                        func=get_weather_func,
+                        description="获取指定城市的实时天气信息，包括温度、湿度、风速等",
+                    )
+                ],
+                "description": "天气信息查询和分析",
+                "use_cases": ["天气查询", "出行规划", "气候分析", "活动安排"]
             },
             
             "data_processing": {
@@ -156,33 +286,33 @@ class ActorFactory:
                     Tool(
                         name="parse_json",
                         func=parse_json_func,
-                        description="解析JSON格式的字符串数据",
-                    ),
-                    Tool(
-                        name="format_data",
-                        func=lambda data: f"格式化数据: {data}",
-                        description="格式化和美化数据输出",
+                        description="解析和格式化JSON格式的字符串数据",
                     )
                 ],
                 "description": "数据解析和处理", 
-                "use_cases": ["数据分析", "格式转换", "验证"]
-            },
-            
-            "communication": {
+                "use_cases": ["数据分析", "格式转换", "结构化处理"]
+            }
+            ,
+            "travel_services": {
                 "tools": [
                     Tool(
-                        name="send_notification",
-                        func=lambda message: f"发送通知: {message}",
-                        description="发送通知消息",
+                        name="currency_convert",
+                        func=currency_convert_func,
+                        description="货币转换：from_currency, to_currency, amount"
                     ),
                     Tool(
-                        name="generate_report",
-                        func=lambda content: f"生成报告: {content}",
-                        description="生成结构化报告",
-                    )
+                        name="get_timezone",
+                        func=get_timezone_func,
+                        description="查询时区：提供 zone 或 (lat,lng)"
+                    ),
+                    Tool(
+                        name="get_public_holidays",
+                        func=get_public_holidays_func,
+                        description="查询公共假期：country_code, year"
+                    ),
                 ],
-                "description": "通信和报告",
-                "use_cases": ["通知", "报告", "协调"]
+                "description": "旅行相关工具：货币、时区、节假日",
+                "use_cases": ["旅行规划", "跨国会议安排", "出行预算"]
             }
         }
     

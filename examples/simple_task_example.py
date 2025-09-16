@@ -32,8 +32,7 @@ async def simple_task_example():
     
     llm_client = OpenAICompatibleClient(
         api_key=api_key,
-        base_url="https://api.deepseek.com",
-        model="deepseek-chat"
+        base_url="https://api.deepseek.com"
     )
     
     # 2. 配置系统
