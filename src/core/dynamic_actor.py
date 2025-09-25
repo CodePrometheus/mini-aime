@@ -1,6 +1,7 @@
 """支持 ReAct 范式与 Function Calling 的动态智能体实现。"""
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List
@@ -10,6 +11,15 @@ from langchain_core.tools import Tool
 from ..llm.base import BaseLLMClient
 from .models import ExecutionStep, TaskStatus
 
+
+logger = logging.getLogger(__name__)
+ACTOR_LOG_PREFIX = "MiniAime|Actor|"
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 class DynamicActor:
     """用于执行特定任务的自主智能体（采用 ReAct 范式）。"""
@@ -57,6 +67,7 @@ class DynamicActor:
         self.progress_manager = progress_manager
         self.start_time = datetime.now()
         self.status = TaskStatus.IN_PROGRESS
+        logger.info(f"{ACTOR_LOG_PREFIX} actor_start actor={self.actor_id} task={self.task_id}")
         
         try:
             # 报告开始执行
@@ -66,6 +77,7 @@ class DynamicActor:
             max_iterations = self.config.execution_config.get("max_iterations", 10)
             
             for step in range(max_iterations):
+                logger.info(f"{ACTOR_LOG_PREFIX} react_step_begin actor={self.actor_id} step={step + 1}")
                 # ReAct cycle: thought -> action -> observation
                 try:
                     thought, action_result = await self._react_step()
@@ -89,6 +101,7 @@ class DynamicActor:
                     # 判断任务是否完成
                     if await self._is_task_complete(action_result.get("observation", "")):
                         self.status = TaskStatus.COMPLETED
+                        logger.info(f"{ACTOR_LOG_PREFIX} task_completed actor={self.actor_id} steps={len(self.memory)}")
                         break
                         
                 except Exception as e:
@@ -96,6 +109,7 @@ class DynamicActor:
                     error_handled = await self._handle_error(e)
                     if not error_handled:
                         self.status = TaskStatus.FAILED
+                        logger.error(f"{ACTOR_LOG_PREFIX} task_failed actor={self.actor_id} error={str(e)}")
                         break
             
             # 生成最终报告
@@ -103,12 +117,14 @@ class DynamicActor:
             
             # 报告完成
             await self._report_progress("任务执行完成", "completed")
+            logger.info(f"{ACTOR_LOG_PREFIX} actor_end actor={self.actor_id} status={self.status.value}")
             
             return final_result
             
         except Exception as e:
             self.status = TaskStatus.FAILED
             await self._report_progress(f"任务执行失败: {str(e)}", "error")
+            logger.error(f"{ACTOR_LOG_PREFIX} actor_exception actor={self.actor_id} error={str(e)}")
             return {"status": "failed", "error": str(e)}
         finally:
             self.end_time = datetime.now()
@@ -143,17 +159,21 @@ class DynamicActor:
             # 调用 LLM（支持 Function Calling）
             if hasattr(self.llm, 'complete_with_functions'):
                 # 如果 LLM 客户端支持 Function Calling
+                logger.info(f"{ACTOR_LOG_PREFIX} llm_request actor={self.actor_id} mode=function_call")
                 response = await self.llm.complete_with_functions(messages, self.functions)
             else:
                 # 降级到普通对话
+                logger.info(f"{ACTOR_LOG_PREFIX} llm_request actor={self.actor_id} mode=text")
                 response = await self.llm.complete_with_context(messages)
             
             # 解析响应
             if isinstance(response, dict) and "function_call" in response:
                 # 处理函数调用
+                logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=function_call")
                 return await self._handle_function_call(response)
             else:
                 # 处理普通响应
+                logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=text")
                 return await self._handle_text_response(response)
                 
         except Exception as e:
@@ -174,6 +194,7 @@ class DynamicActor:
         function_args = json.loads(function_call.get("arguments", "{}"))
         
         thought = f"决定调用工具 {function_name}"
+        logger.info(f"{ACTOR_LOG_PREFIX} tool_call actor={self.actor_id} name={function_name}")
         
         # 执行工具
         if function_name in self.tool_map:
@@ -200,6 +221,7 @@ class DynamicActor:
                     "observation": f"工具执行失败: {str(e)}",
                     "success": False
                 }
+                logger.error(f"{ACTOR_LOG_PREFIX} tool_fail actor={self.actor_id} name={function_name} error={str(e)}")
         else:
             action_result = {
                 "action": f"尝试调用工具 {function_name}",
@@ -237,6 +259,7 @@ class DynamicActor:
             "success": True
         }
         
+        logger.info(f"{ACTOR_LOG_PREFIX} text_step actor={self.actor_id} action={action}")
         return thought, action_result
     
     async def _should_report_progress(self, thought: str, observation: str) -> bool:
@@ -320,6 +343,7 @@ class DynamicActor:
         
         # 报告错误
         await self._report_progress(f"遇到错误: {error_msg[:100]}", "error")
+        logger.error(f"{ACTOR_LOG_PREFIX} error actor={self.actor_id} msg={error_msg}")
         
         # 使用LLM分析错误并制定恢复策略
         recovery_prompt = f"""
@@ -351,19 +375,23 @@ class DynamicActor:
                 strategy = recovery_plan.get("recovery_strategy", "retry")
                 reasoning = recovery_plan.get("reasoning", "")
                 await self._report_progress(f"错误恢复策略: {strategy} - {reasoning}", "retry")
+                logger.info(f"{ACTOR_LOG_PREFIX} recovery actor={self.actor_id} strategy={strategy}")
                 return True
             else:
                 reasoning = recovery_plan.get("reasoning", "无法恢复")
                 await self._report_progress(f"无法恢复错误: {reasoning}", "error")
+                logger.info(f"{ACTOR_LOG_PREFIX} unrecoverable actor={self.actor_id}")
                 return False
                 
         except Exception:
             # 降级策略：基于执行次数的简单判断
             if len(self.memory) < 10:
                 await self._report_progress("尝试继续执行（降级恢复）", "retry")
+                logger.info(f"{ACTOR_LOG_PREFIX} recovery_fallback actor={self.actor_id} mode=continue")
                 return True
             else:
                 await self._report_progress("执行步骤过多，停止尝试", "error")
+                logger.info(f"{ACTOR_LOG_PREFIX} recovery_fallback actor={self.actor_id} mode=stop")
                 return False
     
     async def _generate_final_report(self) -> Dict[str, Any]:
@@ -426,6 +454,7 @@ class DynamicActor:
                 agent_id=self.actor_id,
                 report=final_report
             )
+        logger.info(f"{ACTOR_LOG_PREFIX} final_report actor={self.actor_id} steps={len(self.memory)}")
         
         return final_report
     

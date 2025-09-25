@@ -1,6 +1,7 @@
 """具备实时自适应能力的动态任务规划器。"""
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
@@ -8,6 +9,15 @@ from typing import Any
 from ..llm.base import BaseLLMClient
 from .models import ExecutionStep, Task, TaskStatus
 
+
+logger = logging.getLogger(__name__)
+PLANNER_LOG_PREFIX = "MiniAime|Planner|"
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 class PlannerConfig:
     """动态规划器的行为配置。"""
@@ -57,6 +67,7 @@ class DynamicPlanner:
             (更新后的任务列表, 下一步要执行的任务)
         """
         self.goal = goal
+        logger.info(f"{PLANNER_LOG_PREFIX} plan_begin goal_len={len(goal)} tasks={len(current_tasks)} history={len(execution_history)}")
         self.task_list = current_tasks
 
         # Optional user clarification (if enabled)
@@ -80,6 +91,7 @@ class DynamicPlanner:
             # Get LLM planning response
             response = await self.llm.complete_with_context(messages)
             planning_result = json.loads(response)
+            logger.info(f"{PLANNER_LOG_PREFIX} plan_llm_ok updates={len(planning_result.get('task_updates', []))}")
 
             # Apply task updates
             updated_tasks = self._apply_task_updates(
@@ -100,10 +112,12 @@ class DynamicPlanner:
                 }
             )
 
+            logger.info(f"{PLANNER_LOG_PREFIX} plan_end next_task={(next_task.id if next_task else None)} total_tasks={len(updated_tasks)}")
             return updated_tasks, next_task
 
         except Exception:
             # Fallback to simple decomposition on LLM failure
+            logger.error(f"{PLANNER_LOG_PREFIX} plan_llm_fail fallback")
             return self._fallback_planning(goal, current_tasks), None
 
     async def plan_and_dispatch_batch(
@@ -143,6 +157,7 @@ class DynamicPlanner:
         parallel_tasks = await self._identify_parallel_tasks(
             updated_tasks, primary_task, max_parallel
         )
+        logger.info(f"{PLANNER_LOG_PREFIX} plan_batch primary={(primary_task.id if primary_task else None)} parallel={len(parallel_tasks)}")
         
         return updated_tasks, parallel_tasks
 
@@ -194,10 +209,12 @@ class DynamicPlanner:
             if primary_task not in parallel_tasks:
                 parallel_tasks.insert(0, primary_task)
                 
+            logger.info(f"{PLANNER_LOG_PREFIX} parallel_selected count={len(parallel_tasks[:max_parallel])}")
             return parallel_tasks[:max_parallel]
             
         except Exception:
             # Fallback: return only primary task
+            logger.info(f"{PLANNER_LOG_PREFIX} parallel_fallback primary_only")
             return [primary_task]
 
     async def _analyze_parallel_execution(

@@ -2,10 +2,20 @@
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from .models import ProgressUpdate, SystemState, Task, TaskStatus
+
+logger = logging.getLogger(__name__)
+PROG_LOG_PREFIX = "MiniAime|Progress|"
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 
 class ProgressManager:
@@ -41,6 +51,7 @@ class ProgressManager:
         """
         self.task_tree = tasks
         self._rebuild_task_lookup()
+        logger.info(f"{PROG_LOG_PREFIX} task_tree_set count={len(self.get_all_tasks())}")
     
     def _rebuild_task_lookup(self) -> None:
         """重建任务查找表。"""
@@ -128,6 +139,7 @@ class ProgressManager:
             "data": progress_update.model_dump(),
             "timestamp": datetime.now().isoformat()
         })
+        logger.info(f"{PROG_LOG_PREFIX} update task={task_id} status={status} msg={message[:80]}")
         
         # 通知订阅者
         for subscriber in self.subscribers:
@@ -177,6 +189,7 @@ class ProgressManager:
             },
             "timestamp": datetime.now().isoformat()
         })
+        logger.info(f"{PROG_LOG_PREFIX} final_report task={task_id} status={(task.status.value if task else 'unknown')}")
     
     def get_current_state(self) -> SystemState:
         """获取当前系统状态快照。"""

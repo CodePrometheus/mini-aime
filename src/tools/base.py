@@ -1,10 +1,22 @@
 """基础工具抽象类和工具注册系统。"""
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Type
 
 logger = logging.getLogger(__name__)
+
+# 统一的工具日志前缀
+TOOL_LOG_PREFIX = "MiniAime|Tool|"
+
+# 若未配置处理器，默认添加一个控制台处理器，确保日志可见
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 
 class ToolError(Exception):
@@ -84,27 +96,53 @@ class BaseTool(ABC):
             包含执行结果和状态的字典
         """
         self.call_count += 1
-        
+        start_ts = time.perf_counter()
+        arg_summary = str(kwargs)
+        if len(arg_summary) > 256:
+            arg_summary = arg_summary[:256] + "…"
+        logger.info(f"{TOOL_LOG_PREFIX} start tool={self.name} args={arg_summary}")
+
         try:
-            logger.debug(f"Executing tool {self.name} with args: {kwargs}")
             result = await self.execute(**kwargs)
-            
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+
+            # 结果预览
+            preview: str
+            if isinstance(result, (bytes, bytearray)):
+                preview = f"<bytes:{len(result)}>"
+            elif isinstance(result, str):
+                preview = result[:256] + ("…" if len(result) > 256 else "")
+            elif isinstance(result, dict):
+                preview = f"dict(keys={list(result.keys())[:10]})"
+            else:
+                try:
+                    _text = str(result)
+                except Exception:
+                    _text = "<unrepr>"
+                preview = _text[:256] + ("…" if len(_text) > 256 else "")
+
+            logger.info(
+                f"{TOOL_LOG_PREFIX} success tool={self.name} cost_ms={elapsed_ms:.1f} result={preview}"
+            )
+
             return {
                 "success": True,
                 "result": result,
                 "tool_name": self.name,
-                "error": None
+                "error": None,
             }
-            
+
         except Exception as e:
             self.error_count += 1
-            logger.error(f"Tool {self.name} execution failed: {str(e)}")
-            
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.error(
+                f"{TOOL_LOG_PREFIX} fail tool={self.name} cost_ms={elapsed_ms:.1f} error={str(e)}"
+            )
             return {
                 "success": False,
                 "result": None,
                 "tool_name": self.name,
-                "error": str(e)
+                "error": str(e),
             }
     
     def get_stats(self) -> Dict[str, Any]:

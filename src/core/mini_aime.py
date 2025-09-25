@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import logging
 import json
 import uuid
 from datetime import datetime
@@ -22,6 +23,15 @@ from .models import (
     TaskStatus,
 )
 from .progress_manager import ProgressManager
+
+logger = logging.getLogger(__name__)
+CTRL_LOG_PREFIX = "MiniAime|Controller|"
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 
 class MiniAimeConfig:
@@ -109,11 +119,13 @@ class MiniAime:
         # 初始化会话
         self.session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self.start_time = datetime.now()
+        logger.info(f"{CTRL_LOG_PREFIX} session_start session={self.session_id}")
         
         # Step 1: Task Decomposition (初始任务分解)
         initial_tasks, first_task = await self._step1_task_decomposition(user_goal)
         
         if not initial_tasks:
+            logger.error(f"{CTRL_LOG_PREFIX} decompose_empty")
             return self._create_empty_state("无法分解任务")
         
         # 初始化进度管理器的任务列表
@@ -125,12 +137,14 @@ class MiniAime:
         
         while iteration_count < max_iterations:
             iteration_count += 1
+            logger.info(f"{CTRL_LOG_PREFIX} loop_iter iter={iteration_count} active={len(self.active_agents)}")
             
             # 获取当前系统状态
             current_state = self.progress_manager.get_current_state()
             
             # 检查是否所有任务都已完成
             if self._all_tasks_completed(current_state):
+                logger.info(f"{CTRL_LOG_PREFIX} all_done iter={iteration_count}")
                 break
             
             # 清理已完成的智能体
@@ -143,6 +157,7 @@ class MiniAime:
             
             if not tasks_to_execute and len(self.active_agents) == 0:
                 # 没有待执行任务且没有活跃智能体，结束循环
+                logger.info(f"{CTRL_LOG_PREFIX} idle_no_tasks")
                 break
             
             # Steps 3-4: Actor Instantiation & ReAct Execution
@@ -159,6 +174,7 @@ class MiniAime:
         
         # 等待所有剩余的智能体完成
         await self._wait_for_all_agents()
+        logger.info(f"{CTRL_LOG_PREFIX} session_end session={self.session_id}")
         
         # 返回最终状态
         return self.progress_manager.get_current_state()
@@ -177,6 +193,7 @@ class MiniAime:
             current_tasks=[],
             execution_history=[]
         )
+        logger.info(f"{CTRL_LOG_PREFIX} decompose_done tasks={len(initial_tasks)} first={(first_task.id if first_task else None)}")
         
         return initial_tasks, first_task
     
@@ -198,6 +215,7 @@ class MiniAime:
             execution_history=self.execution_history[-10:],  # 最近10条历史
             max_parallel=self.config.max_parallel_agents - len(self.active_agents)
         )
+        logger.info(f"{CTRL_LOG_PREFIX} dispatch tasks_to_execute={len(parallel_tasks)}")
         
         # 更新任务列表
         await self._update_task_list(updated_tasks)
@@ -244,10 +262,12 @@ class MiniAime:
                     status="started",
                     message=f"智能体 {actor.actor_id} 开始执行任务"
                 )
+                logger.info(f"{CTRL_LOG_PREFIX} actor_started actor={actor.actor_id} task={task.id}")
                 
             except Exception as e:
                 # 智能体创建失败
                 await self._handle_agent_creation_failure(task, e)
+                logger.error(f"{CTRL_LOG_PREFIX} actor_create_fail task={task.id} error={str(e)}")
     
     async def _execute_agent_with_timeout(
         self, actor: DynamicActor, task: Task
@@ -280,6 +300,7 @@ class MiniAime:
             task.status = TaskStatus.COMPLETED
             task.result = result.get("final_report", {})
             
+            logger.info(f"{CTRL_LOG_PREFIX} actor_done actor={actor.actor_id} task={task.id}")
             return result
             
         except asyncio.TimeoutError:
@@ -302,12 +323,14 @@ class MiniAime:
                 status="failed",
                 message=f"任务超时（{self.config.agent_timeout}秒）"
             )
+            logger.error(f"{CTRL_LOG_PREFIX} actor_timeout actor={actor.actor_id} task={task.id}")
             raise Exception(f"任务 {task.id} 执行超时")
             
         except Exception as e:
             # 其他错误
             task.status = TaskStatus.FAILED
             task.result = {"error": str(e)}
+            logger.error(f"{CTRL_LOG_PREFIX} actor_error actor={actor.actor_id} task={task.id} error={str(e)}")
             raise e
     
     async def _step6_evaluation_and_iteration(
@@ -328,6 +351,7 @@ class MiniAime:
         # 如果进度停滞，可能需要重新规划
         if progress_ratio < 0.1 and iteration_count > 10:
             await self._trigger_replanning()
+            logger.info(f"{CTRL_LOG_PREFIX} replanning_triggered")
     
     def _task_to_specification(self, task: Task) -> TaskSpecification:
         """
