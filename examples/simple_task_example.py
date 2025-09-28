@@ -28,7 +28,7 @@ async def simple_task_example():
     """
     
     # 1. 初始化 LLM 客户端（使用 DeepSeek）
-    api_key = os.getenv("DEEPSEEK_API_KEY", "your-api-key")
+    api_key = os.getenv("DEEPSEEK_API_KEY")
     
     llm_client = OpenAICompatibleClient(
         api_key=api_key,
@@ -120,7 +120,7 @@ async def advanced_example_with_monitoring():
     """
     
     # 初始化系统（同上）
-    api_key = os.getenv("DEEPSEEK_API_KEY", "your-api-key")
+    api_key = os.getenv("DEEPSEEK_API_KEY")
     llm_client = OpenAICompatibleClient(
         api_key=api_key,
         base_url="https://api.deepseek.com"
@@ -264,10 +264,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 确保有 API Key
-    if not os.getenv("DEEPSEEK_API_KEY"):
-        print("⚠️ 警告：未设置 DEEPSEEK_API_KEY 环境变量")
-        print("请设置：export DEEPSEEK_API_KEY='your-api-key'")
-        print()
-    
     main()

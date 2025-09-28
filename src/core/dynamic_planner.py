@@ -89,8 +89,7 @@ class DynamicPlanner:
 
         try:
             # Get LLM planning response
-            response = await self.llm.complete_with_context(messages)
-            planning_result = json.loads(response)
+            planning_result = await self.llm.complete_chat_json(messages)
             logger.info(f"{PLANNER_LOG_PREFIX} plan_llm_ok updates={len(planning_result.get('task_updates', []))}")
 
             # Apply task updates
@@ -115,9 +114,9 @@ class DynamicPlanner:
             logger.info(f"{PLANNER_LOG_PREFIX} plan_end next_task={(next_task.id if next_task else None)} total_tasks={len(updated_tasks)}")
             return updated_tasks, next_task
 
-        except Exception:
+        except Exception as e:
             # Fallback to simple decomposition on LLM failure
-            logger.error(f"{PLANNER_LOG_PREFIX} plan_llm_fail fallback")
+            logger.error(f"{PLANNER_LOG_PREFIX} plan_llm_fail fallback, error={e}")
             return self._fallback_planning(goal, current_tasks), None
 
     async def plan_and_dispatch_batch(

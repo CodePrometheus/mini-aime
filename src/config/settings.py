@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables or .env file."""
 
     # LLM API 配置
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY")
     llm_base_url: str = Field(default="https://api.deepseek.com", alias="LLM_BASE_URL")
     llm_model: str = Field(default="deepseek-chat", alias="LLM_MODEL")
@@ -17,6 +16,7 @@ class Settings(BaseSettings):
     
     # 外部服务 API 配置
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+    brave_search_api_key: str = Field(default="", alias="BRAVE_SEARCH_API_KEY")
     weather_api_key: str = Field(default="", alias="WEATHER_API_KEY")
     # 旅行相关服务（固定提供方）
     exchange_rate_api_key: str = Field(default="", alias="EXCHANGE_RATE_API_KEY")

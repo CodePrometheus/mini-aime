@@ -217,11 +217,15 @@ class CodeExecutorTool(BaseTool):
             'sum', 'tuple', 'type', 'zip'
         }
         
-        # 创建受限的 builtins
+        # 创建受限的 builtins - 使用更可靠的方法
+        import builtins
         restricted_builtins = {}
         for name in safe_builtins:
-            if hasattr(__builtins__, name):
-                restricted_builtins[name] = getattr(__builtins__, name)
+            if hasattr(builtins, name):
+                restricted_builtins[name] = getattr(builtins, name)
+        
+        # 添加 __import__ 以支持模块导入
+        restricted_builtins['__import__'] = __import__
         
         # 添加安全的模块
         safe_modules = {}
@@ -231,10 +235,11 @@ class CodeExecutorTool(BaseTool):
             except ImportError:
                 pass  # 模块不存在，跳过
         
-        return {
-            '__builtins__': restricted_builtins,
-            **safe_modules
-        }
+        # 确保 __builtins__ 不会被覆盖
+        result = {**safe_modules}
+        result['__builtins__'] = restricted_builtins
+        
+        return result
     
     @contextmanager
     def _timeout_context(self, timeout: int):

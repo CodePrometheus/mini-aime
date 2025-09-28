@@ -9,6 +9,7 @@ import asyncio
 import logging
 import json
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -44,12 +45,18 @@ class MiniAimeConfig:
         enable_persistence: bool = False,
         enable_auto_recovery: bool = True,
         planner_config: Optional[PlannerConfig] = None,
+        max_task_retries: int = 1,
+        retry_backoff_base: int = 2,
+        retry_backoff_max: int = 30,
     ):
         self.max_parallel_agents = max_parallel_agents
         self.agent_timeout = agent_timeout
         self.enable_persistence = enable_persistence
         self.enable_auto_recovery = enable_auto_recovery
         self.planner_config = planner_config or PlannerConfig()
+        self.max_task_retries = max_task_retries
+        self.retry_backoff_base = retry_backoff_base
+        self.retry_backoff_max = retry_backoff_max
 
 
 class MiniAime:
@@ -93,6 +100,7 @@ class MiniAime:
         self.failed_agents: Dict[str, Exception] = {}
         self.execution_history: List[ExecutionStep] = []
         self.max_history_size = 1000  # 限制历史记录大小
+        self.task_retry_counts: Dict[str, int] = defaultdict(int)
         
         # 并发控制
         self._agents_lock = asyncio.Lock()
@@ -167,7 +175,7 @@ class MiniAime:
             # 智能体会在执行过程中自动报告进度
             
             # Step 6: Evaluation and Iteration
-            await self._step6_evaluation_and_iteration(current_state)
+            await self._step6_evaluation_and_iteration(current_state, iteration_count)
             
             # 短暂等待，让系统处理事件
             await asyncio.sleep(1)
@@ -334,7 +342,7 @@ class MiniAime:
             raise e
     
     async def _step6_evaluation_and_iteration(
-        self, current_state: SystemState
+        self, current_state: SystemState, iteration_index: int
     ) -> None:
         """
         Step 6: 评估与迭代。
@@ -349,7 +357,7 @@ class MiniAime:
         progress_ratio = self._calculate_progress_ratio(current_state)
         
         # 如果进度停滞，可能需要重新规划
-        if progress_ratio < 0.1 and iteration_count > 10:
+        if progress_ratio < 0.1 and iteration_index > 10:
             await self._trigger_replanning()
             logger.info(f"{CTRL_LOG_PREFIX} replanning_triggered")
     
@@ -391,6 +399,8 @@ class MiniAime:
                     # 获取结果
                     result = await agent_task
                     self.completed_agents.add(task_id)
+                    if task_id in self.task_retry_counts:
+                        del self.task_retry_counts[task_id]
                     
                     # 更新任务状态
                     await self.progress_manager.update_progress(
@@ -630,17 +640,36 @@ class MiniAime:
     
     async def _retry_failed_task(self, task: Task) -> None:
         """重试失败的任务。"""
-        
-        # 重置任务状态
-        task.status = TaskStatus.PENDING
-        task.updated_at = datetime.now()
-        
-        # 记录重试
+        retry_count = self.task_retry_counts[task.id]
+
+        if retry_count >= self.config.max_task_retries:
+            task.status = TaskStatus.FAILED
+            task.updated_at = datetime.now()
+            await self.progress_manager.update_progress(
+                task_id=task.id,
+                status="failed",
+                message="达到重试上限，任务已终止"
+            )
+            return
+
+        next_retry = retry_count + 1
+        self.task_retry_counts[task.id] = next_retry
+
+        backoff_seconds = min(
+            self.config.retry_backoff_max,
+            self.config.retry_backoff_base ** retry_count,
+        )
+
         await self.progress_manager.update_progress(
             task_id=task.id,
             status="pending",
-            message="任务将被重试"
+            message=f"第 {next_retry} 次重试将在 {backoff_seconds} 秒后进行"
         )
+
+        await asyncio.sleep(backoff_seconds)
+
+        task.status = TaskStatus.PENDING
+        task.updated_at = datetime.now()
     
     async def _modify_and_retry_task(self, task: Task, recovery_plan: Dict) -> None:
         """修改任务后重试。"""

@@ -31,10 +31,6 @@ class MockLLMClient(BaseLLMClient):
 async def test_tavily_search_tool():
     """测试 Tavily 搜索工具功能。"""
     
-    # 为测试设置环境变量（如果未设置）
-    if not os.getenv("TAVILY_API_KEY"):
-        os.environ["TAVILY_API_KEY"] = "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"
-    
     print("🔍 测试 Tavily 搜索工具功能")
     print("=" * 50)
     

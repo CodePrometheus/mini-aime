@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
@@ -190,6 +190,11 @@ class BaseLLMClient(ABC):
         combined_prompt = "\n\n".join(prompt_parts)
         return await self.complete(combined_prompt)
 
+    async def complete_chat_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Complete chat messages and expect a JSON object response."""
+
+        raise NotImplementedError("JSON chat completion not implemented for this client")
+
 
 class OpenAICompatibleClient(BaseLLMClient):
     """Client for OpenAI-compatible APIs (e.g., DeepSeek via base_url)."""
@@ -201,7 +206,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         retry_config: RetryConfig | None = None,
     ) -> None:
         super().__init__(retry_config)
-        self._api_key = api_key or settings.openai_api_key
+        self._api_key = api_key or settings.deepseek_api_key
         self._base_url = base_url or settings.llm_base_url
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
 
@@ -251,6 +256,27 @@ class OpenAICompatibleClient(BaseLLMClient):
             logger.debug(f"OpenAI API call with context failed: {e!s}")
             raise e
 
+    async def complete_chat_json(
+        self,
+        messages: list[dict[str, str]],
+        model: str = "deepseek-chat",
+        temperature: float = 0.2,
+    ) -> Dict[str, Any]:
+        """Complete chat messages and expect a JSON object response."""
+
+        try:
+            resp: ChatCompletion = await self._client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content or "{}"
+            return json.loads(content)
+        except Exception as e:
+            logger.debug(f"OpenAI API json completion failed: {e!s}")
+            raise e
+
     async def complete_with_functions(
         self, 
         messages: list[dict[str, str]], 
@@ -264,8 +290,8 @@ class OpenAICompatibleClient(BaseLLMClient):
                 model="deepseek-chat",
                 messages=messages,
                 tools=functions,
-                tool_choice="auto",  # 让模型自动决定是否调用函数
-                temperature=0.1,  # 函数调用时使用较低温度
+                tool_choice="auto",
+                temperature=0.1,
                 **kwargs
             )
             

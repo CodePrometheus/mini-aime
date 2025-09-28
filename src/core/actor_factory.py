@@ -2,9 +2,10 @@
 
 import json
 import os
+import inspect
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 import requests
 from langchain_core.tools import Tool
@@ -12,6 +13,7 @@ from langchain_tavily import TavilySearch
 from pydantic import BaseModel, Field
 
 from ..llm.base import BaseLLMClient
+from ..tools.web_tools import BraveSearchTool
 
 
 class TaskSpecification(BaseModel):
@@ -70,18 +72,52 @@ class ActorFactory:
     def _initialize_tool_bundles(self):
         """初始化工具包。"""
         
-        # 网络搜索工具 - 从环境变量读取API Key
-        tavily_api_key = os.getenv("TAVILY_API_KEY")
-        if not tavily_api_key:
-            raise ValueError("TAVILY_API_KEY environment variable is required")
-            
-        tavily_search = TavilySearch(
-            tavily_api_key=tavily_api_key,
-            max_results=5,
-            search_depth="advanced",
-            include_answer=True,
-            include_raw_content=True,
-        )
+        # 网络搜索工具 - 优先使用 Brave Search，回退到 Tavily
+        web_search_tools = []
+        
+        # 尝试初始化 Brave Search
+        brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY")
+        if brave_api_key:
+            try:
+                brave_search_tool = BraveSearchTool(api_key=brave_api_key, max_results=3)
+                
+                # 创建 LangChain 工具包装器
+                def brave_search_func(query: str) -> str:
+                    """使用 Brave Search 进行网络搜索。"""
+                    try:
+                        result = brave_search_tool.execute_sync(query)
+                        return brave_search_tool.format_results(result, max_length=1000)
+                    except Exception as e:
+                        return f"Brave 搜索失败: {str(e)}"
+                
+                brave_search_langchain = Tool(
+                    name="brave_search",
+                    func=brave_search_func,
+                    description="使用 Brave Search API 进行网络搜索，返回格式化的搜索结果"
+                )
+                web_search_tools.append(brave_search_langchain)
+                
+            except Exception as e:
+                print(f"警告: Brave Search 初始化失败: {str(e)}")
+        
+        # 暂时注释掉 Tavily Search，优先使用 Brave Search
+        # tavily_api_key = os.getenv("TAVILY_API_KEY")
+        # if tavily_api_key:
+        #     try:
+        #         tavily_search = TavilySearch(
+        #             tavily_api_key=tavily_api_key,
+        #             max_results=3,
+        #             search_depth="advanced",
+        #             include_answer=True,
+        #             include_raw_content=True,
+        #         )
+        #         web_search_tools.append(tavily_search)
+        #     except Exception as e:
+        #         print(f"警告: Tavily Search 初始化失败: {str(e)}")
+        
+        # 如果没有可用的搜索工具，抛出错误
+        if not web_search_tools:
+            raise ValueError("需要设置 BRAVE_SEARCH_API_KEY 环境变量以启用网络搜索功能")
         
         # 文件操作工具
         def read_file_func(file_path: str) -> str:
@@ -242,9 +278,9 @@ class ActorFactory:
         # 定义工具包
         self.tool_bundles = {
             "web_research": {
-                "tools": [tavily_search],
-                "description": "网络信息搜索和研究",
-                "use_cases": ["信息搜索", "研究调研", "事实验证", "内容收集"]
+                "tools": web_search_tools,
+                "description": "通过 Brave Search 或 Tavily 搜索网络并返回结构化摘要",
+                "use_cases": ["实时信息搜索", "背景调研", "事实验证", "资料收集"]
             },
             
             "file_operations": {
@@ -265,8 +301,8 @@ class ActorFactory:
                         description="列出指定目录的所有文件和子目录",
                     )
                 ],
-                "description": "文件系统操作和管理",
-                "use_cases": ["文档处理", "数据存储", "文件管理", "内容生成"]
+                "description": "在工作目录内读取/写入文件并管理目录",
+                "use_cases": ["查看/保存文档", "生成报告", "整理工作区", "辅助代码/笔记编辑"]
             },
             
             "weather_services": {
@@ -277,8 +313,8 @@ class ActorFactory:
                         description="获取指定城市的实时天气信息，包括温度、湿度、风速等",
                     )
                 ],
-                "description": "天气信息查询和分析",
-                "use_cases": ["天气查询", "出行规划", "气候分析", "活动安排"]
+                "description": "使用 WeatherAPI 查询指定城市的实时天气",
+                "use_cases": ["旅行/活动规划", "行程备忘", "简单气候分析"]
             },
             
             "data_processing": {
@@ -289,8 +325,8 @@ class ActorFactory:
                         description="解析和格式化JSON格式的字符串数据",
                     )
                 ],
-                "description": "数据解析和处理", 
-                "use_cases": ["数据分析", "格式转换", "结构化处理"]
+                "description": "解析 JSON 字符串并返回格式化结果",
+                "use_cases": ["解析 API 响应", "数据清洗", "快速格式校验"]
             }
             ,
             "travel_services": {
@@ -311,8 +347,8 @@ class ActorFactory:
                         description="查询公共假期：country_code, year"
                     ),
                 ],
-                "description": "旅行相关工具：货币、时区、节假日",
-                "use_cases": ["旅行规划", "跨国会议安排", "出行预算"]
+                "description": "旅行辅助：汇率换算、时区确认、节假日查询",
+                "use_cases": ["旅行行程制定", "跨国会议安排", "预算换算", "节假日提醒"]
             }
         }
     
@@ -401,10 +437,11 @@ class ActorFactory:
         5. 需要的专业知识
 
         可用工具包：
-        - web_research: 网络搜索和信息提取
-        - file_operations: 文件读写和管理
-        - data_processing: 数据解析和处理
-        - communication: 通信和报告
+        - web_research: 通过 Tavily Search 查询并总结网络信息
+        - file_operations: 读取/写入文件，列出目录内容
+        - data_processing: 解析 JSON 等轻量数据处理
+        - weather_services: 调用 WeatherAPI 获取实时天气
+        - travel_services: 货币兑换、时区查询、公共假期信息
 
         返回JSON格式：
         {{
@@ -449,78 +486,95 @@ class ActorFactory:
         
         functions = []
         for tool in tools:
-            function = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+            schema = self._build_function_schema(tool)
+            functions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": schema,
+                    },
                 }
-            }
-            
-            # 检查是否是 StructuredTool
-            if hasattr(tool, 'args_schema') and tool.args_schema:
-                try:
-                    schema = tool.args_schema.schema()
-                    function["function"]["parameters"]["properties"] = schema.get("properties", {})
-                    function["function"]["parameters"]["required"] = schema.get("required", [])
-                except Exception:
-                    # 降级为简单参数
-                    function["function"]["parameters"]["properties"] = {
-                        "input": {
-                            "type": "string",
-                            "description": f"输入参数给 {tool.name}"
-                        }
-                    }
-                    function["function"]["parameters"]["required"] = ["input"]
-            else:
-                # 简单工具，推断参数
-                if "file" in tool.name.lower():
-                    if "read" in tool.name.lower():
-                        function["function"]["parameters"]["properties"] = {
-                            "file_path": {
-                                "type": "string",
-                                "description": "要读取的文件路径"
-                            }
-                        }
-                        function["function"]["parameters"]["required"] = ["file_path"]
-                    elif "write" in tool.name.lower():
-                        function["function"]["parameters"]["properties"] = {
-                            "file_path": {
-                                "type": "string", 
-                                "description": "要写入的文件路径"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "要写入的内容"
-                            }
-                        }
-                        function["function"]["parameters"]["required"] = ["file_path", "content"]
-                    else:
-                        function["function"]["parameters"]["properties"] = {
-                            "directory_path": {
-                                "type": "string",
-                                "description": "目录路径"
-                            }
-                        }
-                        function["function"]["parameters"]["required"] = ["directory_path"]
-                else:
-                    # 默认单一输入参数
-                    function["function"]["parameters"]["properties"] = {
-                        "input": {
-                            "type": "string",
-                            "description": f"输入给 {tool.name} 的参数"
-                        }
-                    }
-                    function["function"]["parameters"]["required"] = ["input"]
-            
-            functions.append(function)
-        
+            )
+
         return functions
+
+    def _build_function_schema(self, tool: Tool) -> Dict[str, Any]:
+        """Build JSON schema for a LangChain tool."""
+
+        # StructuredTool already exposes args_schema
+        if hasattr(tool, "args_schema") and tool.args_schema:
+            try:
+                schema = tool.args_schema.schema()
+                properties = schema.get("properties", {})
+                required = schema.get("required", [])
+                return {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                }
+            except Exception:
+                pass  # fallback to signature-based schema
+
+        signature = inspect.signature(tool.func)
+        properties: Dict[str, Any] = {}
+        required: List[str] = []
+
+        for name, param in signature.parameters.items():
+            if name.startswith("_"):
+                continue
+
+            annotation = param.annotation if param.annotation is not inspect._empty else str
+            properties[name] = self._annotation_to_schema(annotation, name)
+
+            if param.default is inspect._empty:
+                required.append(name)
+
+        # additionalProperties 默认允许，为保持严格性可设为 False
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+
+        return schema
+
+    def _annotation_to_schema(self, annotation: Any, param_name: str) -> Dict[str, Any]:
+        """Convert Python type annotation to JSON schema fragment."""
+
+        origin = getattr(annotation, "__origin__", None)
+        args = getattr(annotation, "__args__", ())
+
+        if annotation in (str, inspect._empty):
+            return {"type": "string", "description": f"Parameter {param_name}"}
+        if annotation in (int,):
+            return {"type": "integer", "description": f"Parameter {param_name}"}
+        if annotation in (float,):
+            return {"type": "number", "description": f"Parameter {param_name}"}
+        if annotation in (bool,):
+            return {"type": "boolean", "description": f"Parameter {param_name}"}
+
+        if origin is list or origin is List:
+            item_schema = (
+                self._annotation_to_schema(args[0], f"{param_name}_item") if args else {"type": "string"}
+            )
+            return {
+                "type": "array",
+                "items": item_schema,
+                "description": f"Parameter {param_name}",
+            }
+
+        if origin is Union:
+            schemas = [self._annotation_to_schema(arg, param_name) for arg in args if arg is not type(None)]  # noqa: E721
+            if schemas:
+                return {
+                    "anyOf": schemas,
+                    "description": f"Parameter {param_name}",
+                }
+
+        # default fallback
+        return {"type": "string", "description": f"Parameter {param_name}"}
     
     async def _retrieve_knowledge(self, task_spec: TaskSpecification, task_analysis: TaskAnalysis) -> str:
         """检索和生成相关知识."""
@@ -605,7 +659,7 @@ class ActorFactory:
         
         # 根据复杂度调整参数
         complexity_configs = {
-            "low": {"max_iterations": 5, "timeout": 60},
+            "low": {"max_iterations": 5, "timeout": 150},
             "medium": {"max_iterations": 10, "timeout": 180},
             "high": {"max_iterations": 20, "timeout": 300}
         }
@@ -615,7 +669,7 @@ class ActorFactory:
         config.update({
             "enable_progress_reporting": True,
             "auto_retry_on_error": True,
-            "max_retries": 3,
+            "max_retries": 1,
             "log_level": "INFO"
         })
         

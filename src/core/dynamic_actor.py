@@ -167,14 +167,21 @@ class DynamicActor:
                 response = await self.llm.complete_with_context(messages)
             
             # 解析响应
-            if isinstance(response, dict) and "function_call" in response:
-                # 处理函数调用
-                logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=function_call")
-                return await self._handle_function_call(response)
-            else:
-                # 处理普通响应
-                logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=text")
+            if isinstance(response, dict):
+                if response.get("function_call"):
+                    logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=function_call")
+                    return await self._handle_function_call(response)
+
+                if response.get("tool_calls"):
+                    logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=tool_calls")
+                    return await self._handle_tool_calls(response["tool_calls"])
+
+                logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=json_text")
                 return await self._handle_text_response(response)
+
+            # 兼容纯文本响应
+            logger.info(f"{ACTOR_LOG_PREFIX} llm_response actor={self.actor_id} type=text")
+            return await self._handle_text_response(response)
                 
         except Exception as e:
             # LLM 调用失败，返回错误
@@ -191,7 +198,17 @@ class DynamicActor:
         
         function_call = response["function_call"]
         function_name = function_call["name"]
-        function_args = json.loads(function_call.get("arguments", "{}"))
+        raw_args = function_call.get("arguments", {})
+
+        if isinstance(raw_args, str):
+            try:
+                function_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                function_args = {"tool_input": raw_args}
+        elif isinstance(raw_args, dict):
+            function_args = raw_args
+        else:
+            function_args = {"tool_input": str(raw_args)}
         
         thought = f"决定调用工具 {function_name}"
         logger.info(f"{ACTOR_LOG_PREFIX} tool_call actor={self.actor_id} name={function_name}")
@@ -202,12 +219,15 @@ class DynamicActor:
                 tool = self.tool_map[function_name]
                 
                 # 调用工具（处理不同的参数格式）
-                if len(function_args) == 1 and "input" in function_args:
-                    # 单一输入参数
-                    result = await tool.arun(function_args["input"])
+                if isinstance(function_args, dict):
+                    if "tool_input" in function_args:
+                        result = await tool.arun(function_args["tool_input"])
+                    elif len(function_args) == 1:
+                        result = await tool.arun(next(iter(function_args.values())))
+                    else:
+                        result = await tool.ainvoke(function_args)
                 else:
-                    # 多个命名参数
-                    result = await tool.arun(**function_args)
+                    result = await tool.arun(function_args)
                 
                 action_result = {
                     "action": f"调用工具 {function_name}({json.dumps(function_args, ensure_ascii=False)})",
@@ -231,11 +251,15 @@ class DynamicActor:
         
         return thought, action_result
     
-    async def _handle_text_response(self, response: str) -> tuple[str, Dict[str, Any]]:
-        """处理文本响应（非函数调用）。"""
-        
-        # 尝试解析思考和行动
-        lines = response.split('\n')
+    async def _handle_text_response(self, response: Any) -> tuple[str, Dict[str, Any]]:
+        """处理文本或 JSON 响应（非函数调用）。"""
+
+        if isinstance(response, dict):
+            text = response.get("content") or json.dumps(response, ensure_ascii=False)
+        else:
+            text = str(response or "")
+
+        lines = text.split('\n')
         thought = ""
         action = ""
         
@@ -599,3 +623,118 @@ class DynamicActor:
                 if self.start_time else 0
             )
         }
+    
+    async def _is_critical_error(self, error: Exception) -> bool:
+        """
+        使用LLM判断是否为严重错误，需要停止执行。
+        
+        严格遵循LLM-First原则，避免硬编码关键词匹配。
+        """
+        error_context = {
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "task_description": self.task_description,
+            "current_step": len(self.memory),
+            "recent_actions": [step.action for step in self.memory[-3:]] if self.memory else []
+        }
+        
+        prompt = f"""
+Analyze whether this error is critical and requires stopping task execution:
+
+Task Context:
+- Task: {error_context['task_description']}
+- Current step: {error_context['current_step']}
+- Recent actions: {error_context['recent_actions']}
+
+Error Details:
+- Type: {error_context['error_type']}
+- Message: {error_context['error_message']}
+
+Please determine:
+1. Can this error be resolved through retry or alternative approaches?
+2. Is this a critical error that requires manual intervention or stopping execution?
+3. What is the potential impact if we continue despite this error?
+
+Return JSON format:
+{{
+    "is_critical": true/false,
+    "confidence": 0.0-1.0,
+    "reasoning": "Detailed analysis of why this error is/isn't critical",
+    "suggested_action": "retry/skip/stop/alternative"
+}}
+"""
+        
+        try:
+            response = await self.llm.complete(prompt)
+            result = json.loads(response)
+            
+            # 记录LLM的分析结果
+            logger.info(f"{ACTOR_LOG_PREFIX} critical_error_analysis actor={self.actor_id} "
+                       f"critical={result.get('is_critical', True)} "
+                       f"confidence={result.get('confidence', 0.0)}")
+            
+            return result.get("is_critical", True)  # 默认保守策略
+            
+        except Exception as llm_error:
+            # LLM调用失败时的降级策略：基于错误类型而非字符串匹配
+            logger.warning(f"{ACTOR_LOG_PREFIX} llm_critical_analysis_failed actor={self.actor_id} "
+                          f"error={str(llm_error)} fallback=type_based")
+            
+            # 使用Python异常类型层次结构进行判断
+            return self._fallback_critical_error_check(error)
+    
+    def _fallback_critical_error_check(self, error: Exception) -> bool:
+        """
+        降级策略：基于异常类型层次结构判断，避免字符串匹配。
+        """
+        # 系统级严重错误
+        if isinstance(error, (SystemExit, KeyboardInterrupt, MemoryError)):
+            return True
+            
+        # 权限和安全相关错误
+        if isinstance(error, (PermissionError, OSError)):
+            return True
+            
+        # 网络和连接错误通常可以重试
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return False
+            
+        # 参数和值错误通常可以通过调整策略解决
+        if isinstance(error, (ValueError, TypeError, AttributeError)):
+            return False
+            
+        # 对于未知错误类型，采用保守策略
+        return True
+    
+    def _format_memory(self) -> str:
+        """
+        格式化执行历史为结构化字符串。
+        
+        用于错误恢复和上下文传递，保持ReAct格式的一致性。
+        """
+        if not self.memory:
+            return "No execution history available."
+        
+        # 只保留最近的关键步骤，避免上下文过载
+        recent_steps = self.memory[-5:]  # 最近5步
+        
+        formatted_lines = []
+        formatted_lines.append(f"Execution History for Task: {self.task_description}")
+        formatted_lines.append(f"Total Steps: {len(self.memory)}")
+        formatted_lines.append("Recent Steps:")
+        formatted_lines.append("-" * 50)
+        
+        for i, step in enumerate(recent_steps, 1):
+            step_num = len(self.memory) - len(recent_steps) + i
+            formatted_lines.append(f"Step {step_num}:")
+            formatted_lines.append(f"  Thought: {step.thought}")
+            formatted_lines.append(f"  Action: {step.action}")
+            
+            # 限制观察结果的长度，保持可读性
+            observation = step.observation
+            if len(observation) > 200:
+                observation = observation[:200] + "... [truncated]"
+            formatted_lines.append(f"  Observation: {observation}")
+            formatted_lines.append("")  # 空行分隔
+        
+        return "\n".join(formatted_lines)
