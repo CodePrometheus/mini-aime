@@ -140,6 +140,12 @@ class ProgressManager:
             "timestamp": datetime.now().isoformat()
         })
         logger.info(f"{PROG_LOG_PREFIX} update task={task_id} status={status} msg={message[:80]}")
+
+        # 当 Planner 更新任务列表时，打印美观的任务树（Markdown 结构）
+        if task_id == "system" and status == "updated":
+            markdown_tree = self._render_task_tree_markdown()
+            if markdown_tree:
+                logger.info(f"{PROG_LOG_PREFIX} task_tree_print\n{markdown_tree}")
         
         # 通知订阅者
         for subscriber in self.subscribers:
@@ -152,6 +158,32 @@ class ProgressManager:
         if status in ["completed", "failed"]:
             if agent_id and agent_id in self.active_agents:
                 self.active_agents[agent_id]["status"] = "completed"
+
+    def _render_task_tree_markdown(self) -> str:
+        """将当前任务树渲染为 Markdown 树形结构。"""
+        if not self.task_tree:
+            return ""
+
+        lines: List[str] = []
+
+        def status_token(s: TaskStatus) -> str:
+            if s == TaskStatus.COMPLETED:
+                return "[x]"
+            if s == TaskStatus.FAILED:
+                return "[!]"
+            if s == TaskStatus.IN_PROGRESS:
+                return "[-]"
+            return "[ ]"  # pending
+
+        def add_task_lines(task_list: List[Task], indent: int = 0):
+            prefix = "  " * indent
+            for t in task_list:
+                lines.append(f"{prefix}- {status_token(t.status)} {t.description} ({t.id})")
+                if t.subtasks:
+                    add_task_lines(t.subtasks, indent + 1)
+
+        add_task_lines(self.task_tree, 0)
+        return "\n".join(lines)
     
     async def submit_final_report(
         self,

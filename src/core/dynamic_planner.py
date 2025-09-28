@@ -268,7 +268,9 @@ class DynamicPlanner:
         self, goal: str, current_tasks: list[Task], execution_history: list[ExecutionStep]
     ) -> list[dict[str, str]]:
         """构建用于多轮规划上下文的对话消息。"""
-        messages = [{"role": "system", "content": self._get_planner_system_prompt()}]
+        # 获取可用工具包信息（从执行历史中推断或使用默认）
+        available_tool_bundles = self._extract_available_tool_bundles(execution_history)
+        messages = [{"role": "system", "content": self._get_planner_system_prompt(available_tool_bundles)}]
 
         # Add planning history context
         if self.planning_history:
@@ -289,14 +291,62 @@ class DynamicPlanner:
 
         return messages
 
-    def _get_planner_system_prompt(self) -> str:
+    def _extract_available_tool_bundles(self, execution_history: list[ExecutionStep]) -> list[str]:
+        """从执行历史中提取可用的工具包信息。"""
+        # 默认工具包
+        default_bundles = ["web_research", "file_operations", "data_processing", "weather_services", "travel_services"]
+        
+        # 从执行历史中分析实际使用的工具
+        used_tools = set()
+        for step in execution_history[-10:]:  # 只看最近10步
+            if "brave_search" in step.action or "search" in step.action.lower():
+                used_tools.add("web_research")
+            elif "file" in step.action.lower():
+                used_tools.add("file_operations")
+            elif "weather" in step.action.lower():
+                used_tools.add("weather_services")
+            elif any(word in step.action.lower() for word in ["currency", "timezone", "holiday"]):
+                used_tools.add("travel_services")
+        
+        return list(used_tools) if used_tools else default_bundles
+
+    def _format_tool_bundles_description(self, tool_bundles: list[str]) -> str:
+        """格式化工具包描述。"""
+        descriptions = {
+            "web_research": "- web_research: 网络搜索、内容提取、信息收集",
+            "file_operations": "- file_operations: 文件读写、目录操作、文档管理",
+            "data_processing": "- data_processing: JSON解析、数据转换、结构化处理",
+            "weather_services": "- weather_services: 实时天气查询、气象信息",
+            "travel_services": "- travel_services: 货币转换、时区查询、节假日信息",
+            "code_execution": "- code_execution: Python代码执行、脚本运行、计算任务"
+        }
+        
+        return "\n".join([descriptions.get(bundle, f"- {bundle}: 专用工具包") for bundle in tool_bundles])
+
+    def _get_planner_system_prompt(self, available_tool_bundles: list[str] = None) -> str:
         """生成动态规划器的系统提示。"""
-        return """你是一个动态任务规划器，能够基于实时反馈自适应地分解目标。
+        
+        # 构建工具能力描述
+        tool_capabilities = ""
+        if available_tool_bundles:
+            tool_capabilities = f"""
+
+当前可用工具能力：
+{self._format_tool_bundles_description(available_tool_bundles)}
+
+任务拆分时请考虑：
+- 优先使用多样化的工具组合，避免只依赖网络搜索
+- 根据任务性质选择合适的工具类型
+- 文件操作、数据处理、代码执行等工具同样重要"""
+        
+        return f"""你是一个动态任务规划器，能够基于实时反馈自适应地分解目标。
 
 核心原则：
-1. 从宽泛开始，基于执行发现进行细化
-2. 学习到新信息时生成新任务
-3. 移除/修改不再合理的任务
+1. 动态维护任务树：可以合并、删除、重排任务，不要把初始分解当作固定蓝图
+2. 从宽泛开始，基于执行发现进行细化
+3. 学习到新信息时生成新任务
+4. 移除/修改不再合理的任务
+5. 当任务数量过多（>10个）时，主动考虑合并或提升抽象级别{tool_capabilities}
 4. 基于依赖关系和约束确定优先级
 5. 保持任务具体可执行
 6. 尽可能支持并行执行
@@ -319,7 +369,9 @@ class DynamicPlanner:
         "task_id": "task_id",
         "reasoning": "为什么应该下一步执行这个任务"
     },
-    "parallel_opportunities": ["task_id1", "task_id2"]
+    "parallel_opportunities": ["task_id1", "task_id2"],
+    "should_print_task_tree": true,
+    "task_tree_summary": "任务树的简要状态描述（可选）"
 }
 
 任务对象结构：

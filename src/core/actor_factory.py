@@ -58,6 +58,10 @@ class ActorFactory:
     
     def __init__(self, llm_client: BaseLLMClient, initialize_tools: bool = True):
         self.llm = llm_client
+        # 工具使用统计和建议记录
+        self.tool_usage_stats = {}
+        self.tool_recommendations_history = []
+        
         if initialize_tools:
             self._initialize_tool_bundles()
         else:
@@ -383,9 +387,18 @@ class ActorFactory:
                 persona=persona,
                 knowledge=knowledge,
                 environment=self._get_environment(),
+                selected_tools=selected_tools
             )
             
-            # 7. 构建配置
+            # 7. 记录工具推荐（工具闭环）
+            planner_suggested_tools = task_spec.context.get("required_tools", [])
+            self.record_tool_recommendation(
+                task_id=task_spec.task_id,
+                recommended_tools=task_analysis.recommended_tools,
+                planner_suggested=planner_suggested_tools
+            )
+            
+            # 8. 构建配置
             config = ActorConfiguration(
                 actor_id=f"actor_{uuid.uuid4().hex[:8]}",
                 task_id=task_spec.task_id,
@@ -397,7 +410,8 @@ class ActorFactory:
                 metadata={
                     "created_at": datetime.now().isoformat(),
                     "task_analysis": task_analysis.dict(),
-                    "selected_bundles": task_analysis.recommended_tools
+                    "selected_bundles": task_analysis.recommended_tools,
+                    "planner_suggested": planner_suggested_tools
                 }
             )
             
@@ -418,8 +432,22 @@ class ActorFactory:
             # 降级策略：创建基础配置
             return self._create_fallback_agent(task_spec, str(e))
     
-    async def _analyze_task_requirements(self, task_spec: TaskSpecification) -> TaskAnalysis:
-        """使用LLM分析任务需求."""
+    async def _analyze_task_requirements(self, task_spec: TaskSpecification, context_info: dict = None) -> TaskAnalysis:
+        """使用LLM分析任务需求，支持上下文增强."""
+        
+        # 构建增强的上下文信息
+        context_section = ""
+        if context_info:
+            current_progress = context_info.get("current_progress", "")
+            failure_history = context_info.get("failure_history", [])
+            tool_usage_stats = context_info.get("tool_usage_stats", {})
+            
+            context_section = f"""
+        
+        执行上下文增强：
+        当前进度：{current_progress}
+        历史失败：{'; '.join(failure_history) if failure_history else "无"}
+        工具使用统计：{json.dumps(tool_usage_stats, ensure_ascii=False) if tool_usage_stats else "无"}"""
         
         analysis_prompt = f"""
         分析以下任务的需求：
@@ -427,7 +455,7 @@ class ActorFactory:
         任务描述：{task_spec.description}
         父级目标：{task_spec.parent_goal or "无"}
         已知约束：{', '.join(task_spec.constraints) if task_spec.constraints else "无"}
-        执行上下文：{json.dumps(task_spec.context, ensure_ascii=False)}
+        执行上下文：{json.dumps(task_spec.context, ensure_ascii=False)}{context_section}
 
         请分析：
         1. 任务类型和领域
@@ -436,12 +464,13 @@ class ActorFactory:
         4. 推荐的工具类型
         5. 需要的专业知识
 
-        可用工具包：
-        - web_research: 通过 Tavily Search 查询并总结网络信息
-        - file_operations: 读取/写入文件，列出目录内容
-        - data_processing: 解析 JSON 等轻量数据处理
-        - weather_services: 调用 WeatherAPI 获取实时天气
-        - travel_services: 货币兑换、时区查询、公共假期信息
+        可用工具包详情：
+        - web_research: 网络搜索(Brave/Tavily)、网页内容提取、信息收集与总结
+        - file_operations: 文件读写、目录列表、文档创建与管理
+        - data_processing: JSON解析、数据转换、结构化处理
+        - weather_services: 实时天气查询、气象信息获取
+        - travel_services: 货币转换、时区查询、公共节假日信息
+        - code_execution: Python代码执行、脚本运行、计算任务处理
 
         返回JSON格式：
         {{
@@ -622,8 +651,22 @@ class ActorFactory:
             # 降级策略：基于领域的默认人格
             return self._get_default_persona(task_analysis.domain)
     
-    def _compose_prompt_for_functions(self, persona: str, knowledge: str, environment: str) -> str:
+    def _compose_prompt_for_functions(self, persona: str, knowledge: str, environment: str, selected_tools: list = None) -> str:
         """Compose system prompt optimized for Function Calling mode."""
+        
+        # 构建工具能力描述
+        tools_description = ""
+        if selected_tools:
+            tools_description = f"""
+
+可用工具能力：
+{self._format_selected_tools_description(selected_tools)}
+
+工具使用策略：
+- 优先选择最适合的工具类型，避免过度依赖单一工具
+- 如果连续两次搜索无新信息，请总结现有结果或请求重新规划
+- 遇到足够信息时可提前总结，无需持续搜索直到超时
+- 文件操作、数据处理等工具同样重要，根据任务性质灵活选择"""
         
         return f"""{persona}
 
@@ -631,7 +674,7 @@ class ActorFactory:
 {knowledge}
 
 环境信息：
-{environment}
+{environment}{tools_description}
 
 工作方式：
 1. 仔细分析任务需求，制定清晰的执行计划
@@ -674,6 +717,82 @@ class ActorFactory:
         })
         
         return config
+    
+    def _format_selected_tools_description(self, selected_tools: list) -> str:
+        """格式化选中工具的描述。"""
+        if not selected_tools:
+            return "无特定工具"
+        
+        descriptions = []
+        for tool in selected_tools:
+            if hasattr(tool, 'name') and hasattr(tool, 'description'):
+                descriptions.append(f"- {tool.name}: {tool.description}")
+            else:
+                descriptions.append(f"- {str(tool)}: 专用工具")
+        
+        return "\n".join(descriptions)
+    
+    def record_tool_recommendation(self, task_id: str, recommended_tools: list[str], planner_suggested: list[str] = None):
+        """记录工具推荐，用于工具闭环反馈。"""
+        recommendation_record = {
+            "task_id": task_id,
+            "timestamp": datetime.now().isoformat(),
+            "recommended_tools": recommended_tools,
+            "planner_suggested": planner_suggested or [],
+            "gap_analysis": list(set(recommended_tools) - set(planner_suggested or []))
+        }
+        self.tool_recommendations_history.append(recommendation_record)
+        
+        # 更新工具使用统计
+        for tool in recommended_tools:
+            self.tool_usage_stats[tool] = self.tool_usage_stats.get(tool, 0) + 1
+    
+    def get_tool_feedback_for_planner(self) -> dict:
+        """为 Planner 提供工具使用反馈，形成闭环。"""
+        if not self.tool_recommendations_history:
+            return {}
+        
+        recent_recommendations = self.tool_recommendations_history[-5:]  # 最近5次
+        
+        # 分析工具使用模式
+        tool_frequency = {}
+        gap_patterns = []
+        
+        for record in recent_recommendations:
+            for tool in record["recommended_tools"]:
+                tool_frequency[tool] = tool_frequency.get(tool, 0) + 1
+            
+            if record["gap_analysis"]:
+                gap_patterns.extend(record["gap_analysis"])
+        
+        return {
+            "most_used_tools": sorted(tool_frequency.items(), key=lambda x: x[1], reverse=True)[:3],
+            "underused_capabilities": list(set(gap_patterns)),
+            "tool_diversity_score": len(tool_frequency) / max(len(self.tool_bundles), 1),
+            "recommendations": self._generate_planner_recommendations(tool_frequency, gap_patterns)
+        }
+    
+    def _generate_planner_recommendations(self, tool_frequency: dict, gap_patterns: list) -> list[str]:
+        """生成给 Planner 的工具使用建议。"""
+        recommendations = []
+        
+        # 检查工具使用多样性
+        if len(tool_frequency) <= 2:
+            recommendations.append("建议任务拆分时考虑更多样化的工具类型")
+        
+        # 检查过度依赖某个工具
+        if tool_frequency:
+            max_usage = max(tool_frequency.values())
+            total_usage = sum(tool_frequency.values())
+            if max_usage / total_usage > 0.7:
+                recommendations.append("避免过度依赖单一工具类型，尝试组合使用")
+        
+        # 检查未充分利用的工具
+        if gap_patterns:
+            underused = list(set(gap_patterns))
+            recommendations.append(f"考虑更多使用这些工具类型：{', '.join(underused)}")
+        
+        return recommendations
     
     async def _fallback_task_analysis(self, task_spec: TaskSpecification) -> TaskAnalysis:
         """使用简化LLM提示的降级任务分析策略."""

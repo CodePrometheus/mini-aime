@@ -195,11 +195,25 @@ class MiniAime:
         
         将用户目标分解为结构化的任务计划。
         """
+        # 获取 ActorFactory 的工具反馈信息，为 Planner 提供工具使用指导
+        tool_feedback = self.factory.get_tool_feedback_for_planner()
+        
+        # 构建增强的执行历史，包含工具反馈
+        enhanced_history = []
+        if tool_feedback.get("recommendations"):
+            # 将工具反馈转换为虚拟的执行步骤，供 Planner 参考
+            feedback_step = ExecutionStep(
+                thought="工具使用反馈分析",
+                action=f"tool_feedback: {json.dumps(tool_feedback, ensure_ascii=False)}",
+                observation="ActorFactory 工具使用统计和建议"
+            )
+            enhanced_history.append(feedback_step)
+        
         # 使用 DynamicPlanner 进行初始分解
         initial_tasks, first_task = await self.planner.plan_and_dispatch(
             goal=user_goal,
             current_tasks=[],
-            execution_history=[]
+            execution_history=enhanced_history
         )
         logger.info(f"{CTRL_LOG_PREFIX} decompose_done tasks={len(initial_tasks)} first={(first_task.id if first_task else None)}")
         
@@ -216,11 +230,24 @@ class MiniAime:
         # 获取当前任务列表（从 ProgressManager）
         current_tasks = self._extract_tasks_from_state(current_state)
         
+        # 获取工具反馈并增强执行历史
+        tool_feedback = self.factory.get_tool_feedback_for_planner()
+        enhanced_history = self.execution_history[-10:].copy()  # 最近10条历史
+        
+        if tool_feedback.get("recommendations"):
+            # 添加工具反馈信息到执行历史
+            feedback_step = ExecutionStep(
+                thought="工具使用模式分析",
+                action=f"tool_feedback: {json.dumps(tool_feedback, ensure_ascii=False)}",
+                observation=f"工具多样性评分: {tool_feedback.get('tool_diversity_score', 0):.2f}, 建议: {'; '.join(tool_feedback.get('recommendations', []))}"
+            )
+            enhanced_history.append(feedback_step)
+        
         # 使用批量规划获取可并行执行的任务
         updated_tasks, parallel_tasks = await self.planner.plan_and_dispatch_batch(
             goal=user_goal,
             current_tasks=current_tasks,
-            execution_history=self.execution_history[-10:],  # 最近10条历史
+            execution_history=enhanced_history,
             max_parallel=self.config.max_parallel_agents - len(self.active_agents)
         )
         logger.info(f"{CTRL_LOG_PREFIX} dispatch tasks_to_execute={len(parallel_tasks)}")
