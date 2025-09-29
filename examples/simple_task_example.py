@@ -15,6 +15,15 @@ from src.core import MiniAime, MiniAimeConfig, PlannerConfig
 from src.llm import OpenAICompatibleClient
 
 
+from prometheus_client import start_http_server
+from src.config.settings import settings
+start_http_server(settings.metrics_port)
+
+def get_llm_client():
+    """获取 LLM 客户端，直接使用系统配置。"""
+    return OpenAICompatibleClient()
+
+
 async def simple_task_example():
     """
     执行一个简单的任务示例：计划一个3天的东京旅行。
@@ -27,22 +36,18 @@ async def simple_task_example():
     5. 结构化报告生成
     """
     
-    # 1. 初始化 LLM 客户端（使用 DeepSeek）
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    
-    llm_client = OpenAICompatibleClient(
-        api_key=api_key,
-        base_url="https://api.deepseek.com"
-    )
+    # 1. 初始化 LLM 客户端（支持多个提供商）
+    llm_client = get_llm_client()
     
     # 2. 配置系统
     config = MiniAimeConfig(
         max_parallel_agents=3,  # 最多3个智能体并行
-        agent_timeout=60,  # 每个智能体60秒超时
+        agent_timeout=500,  # 每个智能体超时
         enable_auto_recovery=True,  # 启用自动错误恢复
         planner_config=PlannerConfig(
             enable_user_clarification=False,  # 使用论文原生模式
-            max_parallel_tasks=3
+            max_parallel_tasks=3,
+            max_task_depth=1
         )
     )
     

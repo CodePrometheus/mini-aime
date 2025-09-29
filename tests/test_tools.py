@@ -158,6 +158,30 @@ class TestFileTools:
             # 读取文件
             read_result = await read_tool.execute(test_file)
             assert read_result == test_content
+
+    @pytest.mark.asyncio
+    async def test_default_write_to_docs_directory(self):
+        """当未提供 allowed_paths 时，写入应默认落到项目根 docs 目录。"""
+        # 不传 allowed_paths，启用默认 docs 策略
+        write_tool = FileWriteTool()
+
+        # 相对路径应解析到项目根 docs 目录
+        relative_name = "test_docs_write.txt"
+        content = "doc content"
+
+        result_msg = await write_tool.execute(relative_name, content)
+
+        # 解析出实际路径并断言
+        # 从返回消息中提取文件路径或重建预期路径
+        # 我们直接重建：项目根 -> docs -> relative_name
+        # 与工具内部保持一致（通过 pyproject/git/README 探测）
+        from src.tools.file_tools import _find_project_root  # type: ignore
+        project_root = _find_project_root()
+        docs_file = os.path.join(project_root, "docs", relative_name)
+
+        assert os.path.exists(docs_file)
+        with open(docs_file, "r", encoding="utf-8") as f:
+            assert f.read() == content
     
     @pytest.mark.asyncio
     async def test_directory_list(self):

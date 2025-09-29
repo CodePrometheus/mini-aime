@@ -28,7 +28,7 @@ class PlannerConfig:
         enable_user_interaction: bool = False,
         max_clarification_rounds: int = 2,
         max_parallel_tasks: int = 3,
-        max_task_depth: int = 4,
+        max_task_depth: int = 2,
     ):
         self.enable_user_clarification = enable_user_clarification
         self.enable_user_interaction = enable_user_interaction
@@ -97,6 +97,19 @@ class DynamicPlanner:
                 current_tasks, planning_result.get("task_updates", [])
             )
 
+            # 若存在用户触发的重规划请求（通过 user_feedback / 外部信号注入），执行子树重建
+            # 约定：user_feedback 可包含 JSON，如 {"replan": {"target_task_id": "...", "hint": "...", "scope": "subtree|global"}}
+            replan_spec = None
+            try:
+                if user_feedback and user_feedback.strip().startswith("{"):
+                    parsed = json.loads(user_feedback)
+                    replan_spec = parsed.get("replan")
+            except Exception:
+                replan_spec = None
+
+            if replan_spec:
+                updated_tasks = await self._apply_replan(updated_tasks, replan_spec)
+
             # Select next task to execute
             next_task = self._select_next_task(updated_tasks, planning_result.get("next_action"))
 
@@ -119,10 +132,66 @@ class DynamicPlanner:
             logger.error(f"{PLANNER_LOG_PREFIX} plan_llm_fail fallback, error={e}")
             return self._fallback_planning(goal, current_tasks), None
 
+    async def _apply_replan(self, tasks: list[Task], replan_spec: dict) -> list[Task]:
+        """根据用户提示进行子树/全局重规划，将旧子树标记为 SUPERSEDED。"""
+        scope = replan_spec.get("scope", "subtree")
+        target_id = replan_spec.get("target_task_id")
+        hint = replan_spec.get("hint", "")
+
+        # 标记 superseded 并递增 subtree_revision
+        def mark_superseded(task_list: list[Task]) -> None:
+            for t in task_list:
+                t.status = TaskStatus.SUPERSEDED
+                t.updated_at = datetime.now()
+                t.subtree_revision = (t.subtree_revision or 0) + 1
+                if t.subtasks:
+                    mark_superseded(t.subtasks)
+
+        # 选择重建范围
+        if scope == "global" or not target_id:
+            # 全局重建：全部标记 superseded，并基于新目标+hint 生成新的根任务
+            mark_superseded(tasks)
+            new_root = Task(
+                id=f"task_{uuid.uuid4().hex[:8]}",
+                description=f"[Replan] {self.goal} | hint: {hint[:80]}",
+                status=TaskStatus.PENDING,
+                subtasks=[],
+                result=None,
+            )
+            return [new_root]
+
+        # 子树重建：找到目标子树，标记 superseded，并在同层插入一个新的替代子树根
+        target_task = self._find_task_by_id(tasks, target_id)
+        if not target_task:
+            return tasks  # 找不到目标则不变
+
+        # 定位父层，移除旧节点并插入新节点
+        def replace_in_tree(task_list: list[Task]) -> bool:
+            for i, t in enumerate(task_list):
+                if t.id == target_id:
+                    # 标记旧子树 superseded（保留在历史中不再派发，这里直接替换为新节点更清晰）
+                    mark_superseded([t])
+                    new_node = Task(
+                        id=f"task_{uuid.uuid4().hex[:8]}",
+                        description=f"[Replan Subtree] {t.description} | hint: {hint[:80]}",
+                        status=TaskStatus.PENDING,
+                        subtasks=[],
+                        result=None,
+                        subtree_revision=(t.subtree_revision or 0) + 1,
+                    )
+                    task_list[i] = new_node
+                    return True
+                if t.subtasks and replace_in_tree(t.subtasks):
+                    return True
+            return False
+
+        replace_in_tree(tasks)
+        return tasks
+
     async def plan_and_dispatch_batch(
-        self, 
-        goal: str, 
-        current_tasks: list[Task], 
+        self,
+        goal: str,
+        current_tasks: list[Task],
         execution_history: list[ExecutionStep],
         max_parallel: int | None = None,
         user_feedback: str | None = None
@@ -143,27 +212,27 @@ class DynamicPlanner:
             (更新后的任务列表, 可并行执行的任务列表)
         """
         max_parallel = max_parallel or self.config.max_parallel_tasks
-        
+
         # First, perform standard planning to get updated task list
         updated_tasks, primary_task = await self.plan_and_dispatch(
             goal, current_tasks, execution_history, user_feedback
         )
-        
+
         if not primary_task:
             return updated_tasks, []
-        
+
         # Find additional tasks that can be executed in parallel
         parallel_tasks = await self._identify_parallel_tasks(
             updated_tasks, primary_task, max_parallel
         )
         logger.info(f"{PLANNER_LOG_PREFIX} plan_batch primary={(primary_task.id if primary_task else None)} parallel={len(parallel_tasks)}")
-        
+
         return updated_tasks, parallel_tasks
 
     async def _identify_parallel_tasks(
-        self, 
-        tasks: list[Task], 
-        primary_task: Task, 
+        self,
+        tasks: list[Task],
+        primary_task: Task,
         max_parallel: int
     ) -> list[Task]:
         """
@@ -173,61 +242,61 @@ class DynamicPlanner:
         """
         if max_parallel <= 1:
             return [primary_task]
-            
+
         # Get all pending tasks from the provided task list
         all_tasks = []
-        
+
         def collect_tasks(task_list: list[Task]):
             for task in task_list:
                 all_tasks.append(task)
                 if task.subtasks:
                     collect_tasks(task.subtasks)
-        
+
         collect_tasks(tasks)
         pending_tasks = [t for t in all_tasks if t.status == TaskStatus.PENDING]
-        
+
         if len(pending_tasks) <= 1:
             return [primary_task] if primary_task in pending_tasks else []
-        
+
         # Use LLM to analyze parallel execution possibilities
         try:
             parallel_analysis = await self._analyze_parallel_execution(
                 pending_tasks, primary_task, max_parallel
             )
-            
+
             parallel_task_ids = parallel_analysis.get("parallel_task_ids", [])
-            
+
             # Find and return the identified tasks
             parallel_tasks = []
             for task_id in parallel_task_ids[:max_parallel]:
                 task = self._find_task_by_id(tasks, task_id)
                 if task and task.status == TaskStatus.PENDING:
                     parallel_tasks.append(task)
-            
+
             # Ensure primary task is included if not already
             if primary_task not in parallel_tasks:
                 parallel_tasks.insert(0, primary_task)
-                
+
             logger.info(f"{PLANNER_LOG_PREFIX} parallel_selected count={len(parallel_tasks[:max_parallel])}")
             return parallel_tasks[:max_parallel]
-            
+
         except Exception:
             # Fallback: return only primary task
             logger.info(f"{PLANNER_LOG_PREFIX} parallel_fallback primary_only")
             return [primary_task]
 
     async def _analyze_parallel_execution(
-        self, 
-        pending_tasks: list[Task], 
-        primary_task: Task, 
+        self,
+        pending_tasks: list[Task],
+        primary_task: Task,
         max_parallel: int
     ) -> dict:
         """使用 LLM 分析哪些任务可以并行执行。"""
-        
+
         task_descriptions = []
         for task in pending_tasks:
             task_descriptions.append(f"- {task.id}: {task.description}")
-        
+
         prompt = f"""
         分析哪些任务可以并行执行而不产生冲突：
         
@@ -253,7 +322,7 @@ class DynamicPlanner:
             "excluded_tasks": {{"task_id": "排除原因", ...}}
         }}
         """
-        
+
         try:
             response = await self.llm.complete(prompt)
             return json.loads(response)
@@ -295,7 +364,7 @@ class DynamicPlanner:
         """从执行历史中提取可用的工具包信息。"""
         # 默认工具包
         default_bundles = ["web_research", "file_operations", "data_processing", "weather_services", "travel_services"]
-        
+
         # 从执行历史中分析实际使用的工具
         used_tools = set()
         for step in execution_history[-10:]:  # 只看最近10步
@@ -307,7 +376,7 @@ class DynamicPlanner:
                 used_tools.add("weather_services")
             elif any(word in step.action.lower() for word in ["currency", "timezone", "holiday"]):
                 used_tools.add("travel_services")
-        
+
         return list(used_tools) if used_tools else default_bundles
 
     def _format_tool_bundles_description(self, tool_bundles: list[str]) -> str:
@@ -320,12 +389,12 @@ class DynamicPlanner:
             "travel_services": "- travel_services: 货币转换、时区查询、节假日信息",
             "code_execution": "- code_execution: Python代码执行、脚本运行、计算任务"
         }
-        
+
         return "\n".join([descriptions.get(bundle, f"- {bundle}: 专用工具包") for bundle in tool_bundles])
 
     def _get_planner_system_prompt(self, available_tool_bundles: list[str] = None) -> str:
         """生成动态规划器的系统提示。"""
-        
+
         # 构建工具能力描述
         tool_capabilities = ""
         if available_tool_bundles:
@@ -338,7 +407,7 @@ class DynamicPlanner:
 - 优先使用多样化的工具组合，避免只依赖网络搜索
 - 根据任务性质选择合适的工具类型
 - 文件操作、数据处理、代码执行等工具同样重要"""
-        
+
         return f"""你是一个动态任务规划器，能够基于实时反馈自适应地分解目标。
 
 核心原则：
@@ -351,6 +420,16 @@ class DynamicPlanner:
 5. 保持任务具体可执行
 6. 尽可能支持并行执行
 
+交付物与工件要求：
+- 规划中必须显式包含“生成最终报告文件”的任务节点（如：生成 Markdown 报告）
+- 最终报告需汇总主要发现、关键结论与可操作建议
+- 报告文件应保存到项目 docs/ 目录（例如 docs/final_report_<task_id>.md）
+- 若执行中已产出数据/链接/文件，需在报告中引用并在结果中返回文件路径
+
+层级限制：
+- 任务树的最大深度为 {self.config.max_task_depth}（根任务计为深度1）。
+- 不要创建超过该深度的子任务；如需更多步骤，请创建同层任务或将任务提升为根层。
+
 分解策略：
 - 广度优先探索：从高层开始，逐步细化
 - 约束驱动：让发现的约束驱动新任务生成
@@ -358,24 +437,24 @@ class DynamicPlanner:
 
 输出格式：
 返回JSON格式：
-{
+{{
     "analysis": "对当前情况的分析和变化说明",
     "task_updates": [
-        {"action": "add", "parent_id": "task_id", "task": {...}},
-        {"action": "modify", "task_id": "task_id", "changes": {...}},
-        {"action": "remove", "task_id": "task_id", "reason": "..."}
+        {{"action": "add", "parent_id": "task_id", "task": {{...}}}},
+        {{"action": "modify", "task_id": "task_id", "changes": {{...}}}},
+        {{"action": "remove", "task_id": "task_id", "reason": "..."}}
     ],
-    "next_action": {
+    "next_action": {{
         "task_id": "task_id",
         "reasoning": "为什么应该下一步执行这个任务"
-    },
+    }},
     "parallel_opportunities": ["task_id1", "task_id2"],
     "should_print_task_tree": true,
     "task_tree_summary": "任务树的简要状态描述（可选）"
-}
+}}
 
 任务对象结构：
-{
+{{
     "id": "unique_task_id",
     "description": "清晰可执行的任务描述",
     "status": "pending|in_progress|completed|failed",
@@ -383,7 +462,7 @@ class DynamicPlanner:
     "result": null, // 执行后填充
     "created_at": "ISO timestamp",
     "updated_at": "ISO timestamp"
-}"""
+}}"""
 
     def _format_planning_request(
         self, goal: str, current_tasks: list[Task], execution_history: list[ExecutionStep]
@@ -407,6 +486,10 @@ class DynamicPlanner:
 - 哪些假设是错误的或需要更新？
 - 出现了什么新的机会或约束？
 - 基于依赖关系，哪些任务应该优先处理？
+
+交付物约束：
+- 请确保在任务树中加入“生成最终报告文件（Markdown）并保存到 docs/ 目录”的任务节点
+- 该报告应汇总结论与关键证据，并在最终结果中返回生成的文件路径
 
 请提供你的分析和任务更新。"""
 
@@ -476,9 +559,19 @@ class DynamicPlanner:
                 parent_id = update.get("parent_id")
 
                 if parent_id and parent_id in task_dict:
-                    # Add as subtask
-                    parent_task = task_dict[parent_id]
-                    parent_task.subtasks.append(new_task)
+                    # 深度校验：若超出最大深度，则挂到根层
+                    parent_depth = self._find_task_depth(updated_tasks, parent_id)
+                    max_depth = max(self.config.max_task_depth, 1)
+
+                    if parent_depth is None:
+                        updated_tasks.append(new_task)
+                    else:
+                        # 根为1层，因此新子任务的目标深度 = parent_depth + 1
+                        if parent_depth + 1 > max_depth:
+                            updated_tasks.append(new_task)
+                        else:
+                            parent_task = task_dict[parent_id]
+                            parent_task.subtasks.append(new_task)
                 else:
                     # Add as root task
                     updated_tasks.append(new_task)
@@ -505,6 +598,17 @@ class DynamicPlanner:
                     self._remove_task_from_tree(updated_tasks, task_id)
 
         return updated_tasks
+
+    def _find_task_depth(self, tasks: list[Task], target_id: str, depth: int = 1) -> int | None:
+        """在任务树中查找目标任务的深度（根为1）。"""
+        for task in tasks:
+            if task.id == target_id:
+                return depth
+            if task.subtasks:
+                found = self._find_task_depth(task.subtasks, target_id, depth + 1)
+                if found is not None:
+                    return found
+        return None
 
     def _build_task_dict(self, tasks: list[Task]) -> dict[str, Task]:
         """构建任务字典以便快速查找。"""
@@ -588,9 +692,9 @@ class DynamicPlanner:
         return None
 
     async def _progressive_user_guidance(
-        self, 
-        goal: str, 
-        current_tasks: list[Task], 
+        self,
+        goal: str,
+        current_tasks: list[Task],
         execution_history: list[ExecutionStep],
         user_feedback: str | None = None
     ) -> str | None:
@@ -601,40 +705,40 @@ class DynamicPlanner:
         """
         if not self.config.enable_user_interaction:
             return None
-            
+
         # Analyze current situation for ambiguities
         ambiguity_analysis = await self._analyze_ambiguities(
             goal, current_tasks, execution_history
         )
-        
+
         if not ambiguity_analysis.get("needs_guidance", False):
             return user_feedback  # No guidance needed, just return user feedback
-            
+
         # Generate guiding questions based on ambiguities
         guiding_questions = await self._generate_guiding_questions(
             goal, ambiguity_analysis, user_feedback
         )
-        
+
         if not guiding_questions:
             return user_feedback
-            
+
         # In a real implementation, this would interact with the user
         # For now, we simulate the guidance process
         guidance_result = await self._simulate_user_guidance(guiding_questions)
-        
+
         return guidance_result
 
     async def _analyze_ambiguities(
         self,
         goal: str,
-        current_tasks: list[Task], 
+        current_tasks: list[Task],
         execution_history: list[ExecutionStep]
     ) -> dict[str, Any]:
         """分析当前局面以识别需要澄清的模糊点。"""
-        
+
         task_summary = self._format_task_tree(current_tasks)
         history_summary = self._format_execution_history(execution_history[-3:])
-        
+
         analysis_prompt = f"""分析当前情况，识别需要用户澄清的模糊方面：
 
 目标：{goal}
@@ -679,22 +783,22 @@ class DynamicPlanner:
         user_feedback: str | None = None
     ) -> list[str]:
         """基于模糊点分析生成策略性引导问题。"""
-        
+
         if not ambiguity_analysis.get("needs_guidance", False):
             return []
-            
+
         ambiguous_aspects = ambiguity_analysis.get("ambiguous_aspects", [])
         suggested_questions = ambiguity_analysis.get("suggested_questions", [])
-        
+
         # Focus on high priority aspects first
         high_priority_aspects = [
-            aspect for aspect in ambiguous_aspects 
+            aspect for aspect in ambiguous_aspects
             if aspect.get("priority") == "high"
         ]
-        
+
         if not high_priority_aspects:
             return suggested_questions[:2]  # Limit to 2 questions max
-            
+
         # Generate contextual questions
         question_prompt = f"""基于以下分析，生成1-2个循循善诱的引导问题：
 
@@ -739,9 +843,9 @@ class DynamicPlanner:
         # TODO: Implement actual user interaction in the application layer
         # This could be through:
         # - WebSocket for real-time chat
-        # - HTTP endpoints for question/answer flow  
+        # - HTTP endpoints for question/answer flow
         # - Event-driven architecture with user response callbacks
-        
+
         return None
 
     def _fallback_planning(self, goal: str, current_tasks: list[Task]) -> list[Task]:

@@ -9,12 +9,18 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
 from src.config.settings import settings
+
+try:
+    from prometheus_client import Counter, Histogram
+except Exception:  # pragma: no cover - optional dependency during tests
+    Counter = None  # type: ignore
+    Histogram = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,26 @@ class BaseLLMClient(ABC):
         self._error_count = 0
         self._last_request_time = None
 
+        # Initialize Prometheus metrics lazily if available and enabled
+        self._metrics_enabled = bool(settings.enable_metrics and Counter and Histogram)
+        if self._metrics_enabled:
+            # Define metrics only once per process
+            global _LLM_CALLS, _LLM_LATENCY
+            try:
+                _LLM_CALLS
+            except NameError:
+                _LLM_CALLS = Counter(
+                    "llm_calls_total",
+                    "Total LLM calls",
+                    labelnames=("provider", "model", "method", "status"),
+                )
+                _LLM_LATENCY = Histogram(
+                    "llm_call_duration_seconds",
+                    "LLM call latency in seconds",
+                    labelnames=("provider", "model", "method"),
+                    buckets=(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, float("inf")),
+                )
+
     async def complete_with_retry(self, prompt: str, **kwargs) -> str:
         """Complete text generation with retry mechanism."""
         return await self._retry_on_error(self.complete, prompt, **kwargs)
@@ -86,7 +112,25 @@ class BaseLLMClient(ABC):
                 self._request_count += 1
                 self._last_request_time = datetime.now()
 
-                result = await func(*args, **kwargs)
+                if self._metrics_enabled:
+                    provider = getattr(self, "_provider_name", "unknown")
+                    model = getattr(self, "_model", "unknown")
+                    method = getattr(func, "__name__", "unknown")
+                    import time
+                    start = time.monotonic()
+                    try:
+                        result = await func(*args, **kwargs)
+                        _LLM_CALLS.labels(provider, model, method, "success").inc()
+                        return result
+                    except Exception as e:  # re-counted below in error path as well
+                        _LLM_CALLS.labels(provider, model, method, "error").inc()
+                        raise
+                    finally:
+                        _LLM_LATENCY.labels(provider, model, method).observe(
+                            time.monotonic() - start
+                        )
+                else:
+                    result = await func(*args, **kwargs)
 
                 if attempt > 0:
                     logger.info(f"Request succeeded on attempt {attempt + 1}")
@@ -165,8 +209,8 @@ class BaseLLMClient(ABC):
 
     @abstractmethod
     async def complete_with_functions(
-        self, 
-        messages: list[dict[str, str]], 
+        self,
+        messages: list[dict[str, str]],
         functions: list[dict[str, Any]],
         **kwargs
     ) -> dict[str, Any]:
@@ -203,28 +247,62 @@ class OpenAICompatibleClient(BaseLLMClient):
         self,
         api_key: str | None = None,
         base_url: str | None = None,
+        model: str | None = None,
         retry_config: RetryConfig | None = None,
     ) -> None:
         super().__init__(retry_config)
-        self._api_key = api_key or settings.deepseek_api_key
-        self._base_url = base_url or settings.llm_base_url
+        provider = settings.llm_provider.strip().lower()
+
+        if api_key is not None and base_url is not None:
+            # 显式传参优先，直接采用
+            self._api_key = api_key
+            self._base_url = base_url
+        elif provider == "openrouter":
+            self._api_key = settings.openrouter_api_key
+            self._base_url = settings.openrouter_api_base
+        elif provider == "deepseek":
+            self._api_key = settings.deepseek_api_key
+            self._base_url = settings.llm_base_url
+        else:
+            raise ValueError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")
+
+        self._model = model or settings.llm_model
+        self._provider_name = provider
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
 
     async def complete(
         self,
         prompt: str,
-        model: str = "deepseek-chat",
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> str:
         """Complete text generation using the configured model."""
         try:
-            resp: ChatCompletion = await self._client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            if getattr(self, "_metrics_enabled", False):
+                import time
+                start = time.monotonic()
+                try:
+                    resp: ChatCompletion = await self._client.chat.completions.create(
+                        model=model or self._model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete", "success").inc()
+                    return resp.choices[0].message.content or ""
+                except Exception:
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete", "error").inc()
+                    raise
+                finally:
+                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete").observe(time.monotonic() - start)
+            else:
+                resp: ChatCompletion = await self._client.chat.completions.create(
+                    model=model or self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
             return resp.choices[0].message.content or ""
         except Exception as e:
             logger.debug(f"OpenAI API call failed: {e!s}")
@@ -243,15 +321,32 @@ class OpenAICompatibleClient(BaseLLMClient):
         """Estimate token count for given text."""
         return len(text) // 4
 
-    async def complete_with_context(self, messages: list[dict[str, str]]) -> str:
+    async def complete_with_context(self, messages: list[dict[str, str]], model: str | None = None) -> str:
         """Complete with conversation context using native chat format."""
         try:
-            resp: ChatCompletion = await self._client.chat.completions.create(
-                model="deepseek-chat",
-                messages=messages,
-                temperature=0.2,
-            )
-            return resp.choices[0].message.content or ""
+            if getattr(self, "_metrics_enabled", False):
+                import time
+                start = time.monotonic()
+                try:
+                    resp: ChatCompletion = await self._client.chat.completions.create(
+                        model=model or self._model,
+                        messages=messages,
+                        temperature=0.2,
+                    )
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_context", "success").inc()
+                    return resp.choices[0].message.content or ""
+                except Exception:
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_context", "error").inc()
+                    raise
+                finally:
+                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_with_context").observe(time.monotonic() - start)
+            else:
+                resp: ChatCompletion = await self._client.chat.completions.create(
+                    model=model or self._model,
+                    messages=messages,
+                    temperature=0.2,
+                )
+                return resp.choices[0].message.content or ""
         except Exception as e:
             logger.debug(f"OpenAI API call with context failed: {e!s}")
             raise e
@@ -259,45 +354,84 @@ class OpenAICompatibleClient(BaseLLMClient):
     async def complete_chat_json(
         self,
         messages: list[dict[str, str]],
-        model: str = "deepseek-chat",
+        model: str | None = None,
         temperature: float = 0.2,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Complete chat messages and expect a JSON object response."""
 
         try:
-            resp: ChatCompletion = await self._client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                response_format={"type": "json_object"},
-            )
-            content = resp.choices[0].message.content or "{}"
-            return json.loads(content)
+            if getattr(self, "_metrics_enabled", False):
+                import time
+                start = time.monotonic()
+                try:
+                    resp: ChatCompletion = await self._client.chat.completions.create(
+                        model=model or self._model,
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"},
+                    )
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_chat_json", "success").inc()
+                    content = resp.choices[0].message.content or "{}"
+                    return json.loads(content)
+                except Exception:
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_chat_json", "error").inc()
+                    raise
+                finally:
+                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_chat_json").observe(time.monotonic() - start)
+            else:
+                resp: ChatCompletion = await self._client.chat.completions.create(
+                    model=model or self._model,
+                    messages=messages,
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                )
+                content = resp.choices[0].message.content or "{}"
+                return json.loads(content)
         except Exception as e:
             logger.debug(f"OpenAI API json completion failed: {e!s}")
             raise e
 
     async def complete_with_functions(
-        self, 
-        messages: list[dict[str, str]], 
+        self,
+        messages: list[dict[str, str]],
         functions: list[dict[str, Any]],
+        model: str | None = None,
         **kwargs
     ) -> dict[str, Any]:
         """Complete with function calling support using DeepSeek API."""
         try:
-            # DeepSeek 使用 'tools' 参数而不是 'functions'
-            resp: ChatCompletion = await self._client.chat.completions.create(
-                model="deepseek-chat",
-                messages=messages,
-                tools=functions,
-                tool_choice="auto",
-                temperature=0.1,
-                **kwargs
-            )
-            
+            temperature = kwargs.pop("temperature", 0.1)
+            if getattr(self, "_metrics_enabled", False):
+                import time
+                start = time.monotonic()
+                try:
+                    resp: ChatCompletion = await self._client.chat.completions.create(
+                        model=model or self._model,
+                        messages=messages,
+                        tools=functions,
+                        tool_choice="auto",
+                        temperature=temperature,
+                        **kwargs
+                    )
+                except Exception:
+                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_functions", "error").inc()
+                    raise
+                finally:
+                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_with_functions").observe(time.monotonic() - start)
+                _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_functions", "success").inc()
+            else:
+                resp: ChatCompletion = await self._client.chat.completions.create(
+                    model=model or self._model,
+                    messages=messages,
+                    tools=functions,
+                    tool_choice="auto",
+                    temperature=temperature,
+                    **kwargs
+                )
+
             choice = resp.choices[0]
             message = choice.message
-            
+
             # 检查是否有函数调用
             if message.tool_calls:
                 tool_call = message.tool_calls[0]  # 取第一个函数调用
@@ -315,7 +449,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                     "content": message.content or "",
                     "finish_reason": choice.finish_reason
                 }
-                
+
         except Exception as e:
             logger.debug(f"OpenAI API call with functions failed: {e!s}")
             raise e

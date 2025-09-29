@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,8 @@ class TaskStatus(Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    BLOCKED = "blocked"
+    SUPERSEDED = "superseded"
 
 
 @dataclass
@@ -26,6 +28,10 @@ class Task:
     status: TaskStatus
     subtasks: list["Task"] | None = None
     result: str | None = None
+    # 人机环/重规划相关元数据
+    blocked_reason: str | None = None
+    resume_token: str | None = None
+    subtree_revision: int = 0
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -90,12 +96,21 @@ class ProgressUpdate(BaseModel):
 class SystemState(BaseModel):
     """系统状态模型（用于整体进度监控）。"""
 
+    timestamp: datetime = Field(default_factory=datetime.now, description="Snapshot timestamp")
+    session_id: str = Field(default="", description="Current session identifier")
+
     task_count: int = Field(default=0, description="Total number of tasks")
     active_agents: list[str] = Field(default_factory=list, description="Active agent IDs")
     completed_count: int = Field(default=0, description="Number of completed tasks")
     pending_count: int = Field(default=0, description="Number of pending tasks")
     in_progress_count: int = Field(default=0, description="Number of tasks in progress")
     failed_count: int = Field(default=0, description="Number of failed tasks")
+
+    recent_events: list[str] = Field(default_factory=list, description="Recent progress events")
+    overall_progress: float = Field(default=0.0, description="Overall task completion ratio [0,1]")
+    estimated_completion: datetime | None = Field(default=None, description="Estimated completion time")
+    system_health: str = Field(default="healthy", description="System health status")
+
     total_agents_created: int = Field(default=0, description="Total agents created")
     system_uptime: float = Field(default=0.0, description="System uptime in seconds")
 

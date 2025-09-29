@@ -3,7 +3,8 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,23 +32,23 @@ class BaseTool(ABC):
     提供统一的工具接口，支持同步和异步执行，
     包含权限检查、错误处理和日志记录功能。
     """
-    
+
     def __init__(
         self,
         name: str,
         description: str,
-        required_permissions: Optional[List[str]] = None,
+        required_permissions: list[str] | None = None,
         **kwargs
     ):
         self.name = name
         self.description = description
         self.required_permissions = required_permissions or []
         self.metadata = kwargs
-        
+
         # 统计信息
         self.call_count = 0
         self.error_count = 0
-        
+
     @abstractmethod
     async def execute(self, **kwargs) -> Any:
         """
@@ -63,7 +64,7 @@ class BaseTool(ABC):
             ToolError: 工具执行失败
         """
         raise NotImplementedError
-    
+
     def execute_sync(self, **kwargs) -> Any:
         """
         同步执行工具（默认实现抛出异常）。
@@ -71,8 +72,8 @@ class BaseTool(ABC):
         子类可以重写此方法提供同步版本。
         """
         raise NotImplementedError(f"Tool {self.name} does not support synchronous execution")
-    
-    async def validate_permissions(self, available_permissions: List[str]) -> bool:
+
+    async def validate_permissions(self, available_permissions: list[str]) -> bool:
         """
         验证工具所需权限。
         
@@ -87,8 +88,8 @@ class BaseTool(ABC):
                 logger.warning(f"Tool {self.name} requires permission {permission}")
                 return False
         return True
-    
-    async def safe_execute(self, **kwargs) -> Dict[str, Any]:
+
+    async def safe_execute(self, **kwargs) -> dict[str, Any]:
         """
         安全执行工具，包含错误处理和统计。
         
@@ -136,7 +137,7 @@ class BaseTool(ABC):
             self.error_count += 1
             elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
             logger.error(
-                f"{TOOL_LOG_PREFIX} fail tool={self.name} cost_ms={elapsed_ms:.1f} error={str(e)}"
+                f"{TOOL_LOG_PREFIX} fail tool={self.name} cost_ms={elapsed_ms:.1f} error={e!s}"
             )
             return {
                 "success": False,
@@ -144,8 +145,46 @@ class BaseTool(ABC):
                 "tool_name": self.name,
                 "error": str(e),
             }
-    
-    def get_stats(self) -> Dict[str, Any]:
+
+    async def execute_with_retry(
+        self,
+        *,
+        max_retries: int = 0,
+        backoff_ms: int = 0,
+        **kwargs
+    ) -> dict[str, Any]:
+        """
+        带重试的安全执行包装。
+
+        - 遵循工具元数据 `is_idempotent` 决定是否可自动重试
+        - 返回结构与 `safe_execute` 相同
+        """
+        attempts = 0
+        last_result: dict[str, Any] | None = None
+
+        # 非幂等工具默认不重试
+        is_idempotent = bool(self.metadata.get("is_idempotent", True))
+        if not is_idempotent:
+            max_retries = 0
+
+        while True:
+            attempts += 1
+            result = await self.safe_execute(**kwargs)
+            last_result = result
+            if result.get("success"):
+                return result
+
+            if attempts > max_retries:
+                return result
+
+            if backoff_ms > 0:
+                try:
+                    import asyncio
+                    await asyncio.sleep(backoff_ms / 1000.0)
+                except Exception:
+                    pass
+
+    def get_stats(self) -> dict[str, Any]:
         """获取工具统计信息。"""
         return {
             "name": self.name,
@@ -155,7 +194,7 @@ class BaseTool(ABC):
             "required_permissions": self.required_permissions,
             "metadata": self.metadata
         }
-    
+
     def __str__(self) -> str:
         return f"Tool({self.name}): {self.description}"
 
@@ -166,11 +205,11 @@ class ToolRegistry:
     
     支持动态注册、查找和管理工具实例。
     """
-    
+
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {}
-        self._tool_classes: Dict[str, Type[BaseTool]] = {}
-        
+        self._tools: dict[str, BaseTool] = {}
+        self._tool_classes: dict[str, type[BaseTool]] = {}
+
     def register_tool(self, tool: BaseTool) -> None:
         """
         注册工具实例。
@@ -180,14 +219,14 @@ class ToolRegistry:
         """
         if not isinstance(tool, BaseTool):
             raise TypeError(f"Expected BaseTool instance, got {type(tool)}")
-            
+
         if tool.name in self._tools:
             logger.warning(f"Tool {tool.name} already registered, overwriting")
-            
+
         self._tools[tool.name] = tool
         logger.info(f"Registered tool: {tool.name}")
-    
-    def register_tool_class(self, tool_class: Type[BaseTool], name: str) -> None:
+
+    def register_tool_class(self, tool_class: type[BaseTool], name: str) -> None:
         """
         注册工具类。
         
@@ -197,15 +236,15 @@ class ToolRegistry:
         """
         if not issubclass(tool_class, BaseTool):
             raise TypeError(f"Expected BaseTool subclass, got {tool_class}")
-            
+
         self._tool_classes[name] = tool_class
         logger.info(f"Registered tool class: {name}")
-    
-    def get_tool(self, name: str) -> Optional[BaseTool]:
+
+    def get_tool(self, name: str) -> BaseTool | None:
         """获取工具实例。"""
         return self._tools.get(name)
-    
-    def create_tool(self, name: str, **kwargs) -> Optional[BaseTool]:
+
+    def create_tool(self, name: str, **kwargs) -> BaseTool | None:
         """
         从注册的工具类创建工具实例。
         
@@ -219,22 +258,22 @@ class ToolRegistry:
         tool_class = self._tool_classes.get(name)
         if not tool_class:
             return None
-            
+
         try:
             return tool_class(**kwargs)
         except Exception as e:
-            logger.error(f"Failed to create tool {name}: {str(e)}")
+            logger.error(f"Failed to create tool {name}: {e!s}")
             return None
-    
-    def list_tools(self) -> List[str]:
+
+    def list_tools(self) -> list[str]:
         """获取所有已注册工具名称。"""
         return list(self._tools.keys())
-    
-    def list_tool_classes(self) -> List[str]:
+
+    def list_tool_classes(self) -> list[str]:
         """获取所有已注册工具类名称。"""
         return list(self._tool_classes.keys())
-    
-    def get_tools_by_permission(self, permissions: List[str]) -> List[BaseTool]:
+
+    def get_tools_by_permission(self, permissions: list[str]) -> list[BaseTool]:
         """
         根据权限筛选工具。
         
@@ -245,14 +284,14 @@ class ToolRegistry:
             有权限使用的工具列表
         """
         available_tools = []
-        
+
         for tool in self._tools.values():
             # 检查是否有足够权限
             if all(perm in permissions for perm in tool.required_permissions):
                 available_tools.append(tool)
-                
+
         return available_tools
-    
+
     def unregister_tool(self, name: str) -> bool:
         """
         注销工具。
@@ -268,12 +307,12 @@ class ToolRegistry:
             logger.info(f"Unregistered tool: {name}")
             return True
         return False
-    
-    def get_registry_stats(self) -> Dict[str, Any]:
+
+    def get_registry_stats(self) -> dict[str, Any]:
         """获取注册表统计信息。"""
         total_calls = sum(tool.call_count for tool in self._tools.values())
         total_errors = sum(tool.error_count for tool in self._tools.values())
-        
+
         return {
             "total_tools": len(self._tools),
             "total_tool_classes": len(self._tool_classes),
