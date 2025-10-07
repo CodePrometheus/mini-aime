@@ -69,6 +69,11 @@ ignore = [
     "E501",   # Line too long (handled by formatter)
     "B008",   # Do not perform function calls in argument defaults (common in FastAPI)
     "UP007",  # Use X | Y instead of Union[X, Y] (maintain backward compatibility)
+    "RUF001", # Ambiguous unicode character in string (Chinese punctuation)
+    "RUF002", # Ambiguous unicode character in docstring (Chinese punctuation)
+    "RUF003", # Ambiguous unicode character in comment (Chinese punctuation)
+    "C901",   # Function too complex (can be refactored gradually)
+    "B904",   # Raise without from inside except (can be fixed later)
 ]
 
 # Per-file ignore rules
@@ -78,6 +83,9 @@ ignore = [
     "S101",   # Allow assert in tests
     "S105",   # Allow hardcoded passwords in tests
     "S106",   # Allow hardcoded passwords in tests
+    "C901",   # Allow complex functions in tests
+    "F841",   # Allow unused variables in tests
+    "RUF059", # Allow unused unpacked variables in tests
 ]
 
 # Auto-fix configuration

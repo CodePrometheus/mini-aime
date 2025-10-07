@@ -42,21 +42,21 @@ class FileReadTool(BaseTool):
             name="read_file",
             description="读取指定路径的文件内容",
             required_permissions=["file_system_access"],
-            allowed_paths=allowed_paths
+            allowed_paths=allowed_paths,
         )
         self.allowed_paths = allowed_paths
 
     async def execute(self, file_path: str, encoding: str = "utf-8") -> str:
         """
         读取文件内容。
-        
+
         Args:
             file_path: 文件路径
             encoding: 文件编码，默认utf-8
-            
+
         Returns:
             文件内容
-            
+
         Raises:
             ToolError: 文件读取失败
         """
@@ -64,8 +64,9 @@ class FileReadTool(BaseTool):
             # 路径安全检查
             if self.allowed_paths:
                 abs_path = os.path.abspath(file_path)
-                if not any(abs_path.startswith(os.path.abspath(allowed))
-                          for allowed in self.allowed_paths):
+                if not any(
+                    abs_path.startswith(os.path.abspath(allowed)) for allowed in self.allowed_paths
+                ):
                     raise ToolError(f"Access denied: {file_path} not in allowed paths")
 
             # 检查文件是否存在
@@ -89,6 +90,7 @@ class FileReadTool(BaseTool):
     def execute_sync(self, file_path: str, encoding: str = "utf-8") -> str:
         """同步版本的文件读取。"""
         import asyncio
+
         return asyncio.run(self.execute(file_path, encoding))
 
 
@@ -100,7 +102,7 @@ class FileWriteTool(BaseTool):
             name="write_file",
             description="将内容写入指定路径的文件",
             required_permissions=["file_system_access"],
-            allowed_paths=allowed_paths
+            allowed_paths=allowed_paths,
         )
         # Default to project docs directory when no explicit allowed paths
         if allowed_paths is None:
@@ -115,24 +117,20 @@ class FileWriteTool(BaseTool):
             self._default_base_dir = None
 
     async def execute(
-        self,
-        file_path: str,
-        content: str,
-        encoding: str = "utf-8",
-        create_dirs: bool = True
+        self, file_path: str, content: str, encoding: str = "utf-8", create_dirs: bool = True
     ) -> str:
         """
         写入文件内容。
-        
+
         Args:
             file_path: 文件路径
             content: 要写入的内容
             encoding: 文件编码，默认utf-8
             create_dirs: 是否自动创建目录
-            
+
         Returns:
             成功消息
-            
+
         Raises:
             ToolError: 文件写入失败
         """
@@ -145,8 +143,9 @@ class FileWriteTool(BaseTool):
             # 路径安全检查
             if self.allowed_paths:
                 abs_path = os.path.abspath(file_path)
-                if not any(abs_path.startswith(os.path.abspath(allowed))
-                          for allowed in self.allowed_paths):
+                if not any(
+                    abs_path.startswith(os.path.abspath(allowed)) for allowed in self.allowed_paths
+                ):
                     raise ToolError(f"Access denied: {file_path} not in allowed paths")
 
             # 创建目录（如果需要）
@@ -156,7 +155,7 @@ class FileWriteTool(BaseTool):
                     os.makedirs(dir_path, exist_ok=True)
 
             # 写入文件
-            with open(file_path, 'w', encoding=encoding) as f:
+            with open(file_path, "w", encoding=encoding) as f:
                 f.write(content)
 
             file_size = os.path.getsize(file_path)
@@ -166,14 +165,11 @@ class FileWriteTool(BaseTool):
             raise ToolError(f"Failed to write file {file_path}: {e!s}")
 
     def execute_sync(
-        self,
-        file_path: str,
-        content: str,
-        encoding: str = "utf-8",
-        create_dirs: bool = True
+        self, file_path: str, content: str, encoding: str = "utf-8", create_dirs: bool = True
     ) -> str:
         """同步版本的文件写入。"""
         import asyncio
+
         return asyncio.run(self.execute(file_path, content, encoding, create_dirs))
 
 
@@ -185,7 +181,7 @@ class DirectoryListTool(BaseTool):
             name="list_directory",
             description="列出指定目录的所有文件和子目录",
             required_permissions=["file_system_access"],
-            allowed_paths=allowed_paths
+            allowed_paths=allowed_paths,
         )
         self.allowed_paths = allowed_paths
 
@@ -194,20 +190,20 @@ class DirectoryListTool(BaseTool):
         directory_path: str,
         include_hidden: bool = False,
         include_size: bool = True,
-        recursive: bool = False
+        recursive: bool = False,
     ) -> str:
         """
         列出目录内容。
-        
+
         Args:
             directory_path: 目录路径
             include_hidden: 是否包含隐藏文件
             include_size: 是否包含文件大小信息
             recursive: 是否递归列出子目录
-            
+
         Returns:
             目录内容的格式化字符串
-            
+
         Raises:
             ToolError: 目录列表失败
         """
@@ -215,8 +211,9 @@ class DirectoryListTool(BaseTool):
             # 路径安全检查
             if self.allowed_paths:
                 abs_path = os.path.abspath(directory_path)
-                if not any(abs_path.startswith(os.path.abspath(allowed))
-                          for allowed in self.allowed_paths):
+                if not any(
+                    abs_path.startswith(os.path.abspath(allowed)) for allowed in self.allowed_paths
+                ):
                     raise ToolError(f"Access denied: {directory_path} not in allowed paths")
 
             # 检查目录是否存在
@@ -230,15 +227,15 @@ class DirectoryListTool(BaseTool):
             items = []
 
             if recursive:
-                for root, dirs, files in os.walk(directory_path):
-                    level = root.replace(directory_path, '').count(os.sep)
-                    indent = ' ' * 2 * level
+                for root, _dirs, files in os.walk(directory_path):
+                    level = root.replace(directory_path, "").count(os.sep)
+                    indent = " " * 2 * level
 
                     items.append(f"{indent}{os.path.basename(root)}/")
 
-                    sub_indent = ' ' * 2 * (level + 1)
+                    sub_indent = " " * 2 * (level + 1)
                     for file in files:
-                        if not include_hidden and file.startswith('.'):
+                        if not include_hidden and file.startswith("."):
                             continue
 
                         file_path = os.path.join(root, file)
@@ -253,7 +250,7 @@ class DirectoryListTool(BaseTool):
             else:
                 entries = os.listdir(directory_path)
                 if not include_hidden:
-                    entries = [e for e in entries if not e.startswith('.')]
+                    entries = [e for e in entries if not e.startswith(".")]
 
                 entries.sort()
 
@@ -285,10 +282,11 @@ class DirectoryListTool(BaseTool):
         directory_path: str,
         include_hidden: bool = False,
         include_size: bool = True,
-        recursive: bool = False
+        recursive: bool = False,
     ) -> str:
         """同步版本的目录列表。"""
         import asyncio
+
         return asyncio.run(self.execute(directory_path, include_hidden, include_size, recursive))
 
 
@@ -300,21 +298,21 @@ class CreateDirectoryTool(BaseTool):
             name="create_directory",
             description="创建指定路径的目录",
             required_permissions=["file_system_access"],
-            allowed_paths=allowed_paths
+            allowed_paths=allowed_paths,
         )
         self.allowed_paths = allowed_paths
 
     async def execute(self, directory_path: str, exist_ok: bool = True) -> str:
         """
         创建目录。
-        
+
         Args:
             directory_path: 目录路径
             exist_ok: 如果目录已存在是否报错
-            
+
         Returns:
             成功消息
-            
+
         Raises:
             ToolError: 目录创建失败
         """
@@ -322,8 +320,9 @@ class CreateDirectoryTool(BaseTool):
             # 路径安全检查
             if self.allowed_paths:
                 abs_path = os.path.abspath(directory_path)
-                if not any(abs_path.startswith(os.path.abspath(allowed))
-                          for allowed in self.allowed_paths):
+                if not any(
+                    abs_path.startswith(os.path.abspath(allowed)) for allowed in self.allowed_paths
+                ):
                     raise ToolError(f"Access denied: {directory_path} not in allowed paths")
 
             # 创建目录
@@ -339,4 +338,5 @@ class CreateDirectoryTool(BaseTool):
     def execute_sync(self, directory_path: str, exist_ok: bool = True) -> str:
         """同步版本的目录创建。"""
         import asyncio
+
         return asyncio.run(self.execute(directory_path, exist_ok))

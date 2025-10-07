@@ -52,20 +52,12 @@ class MockLLMClient(BaseLLMClient):
         import json
 
         return json.dumps(self.response_data)
-    
-    async def complete_with_functions(
-        self, 
-        messages: list, 
-        functions: list,
-        **kwargs
-    ) -> dict:
+
+    async def complete_with_functions(self, messages: list, functions: list, **kwargs) -> dict:
         """Function calling 的模拟实现。"""
         # 返回普通文本响应（不调用函数）
         content = await self.complete("")
-        return {
-            "content": content,
-            "finish_reason": "stop"
-        }
+        return {"content": content, "finish_reason": "stop"}
 
 
 @pytest.fixture
@@ -234,65 +226,68 @@ def test_planner_config():
 @pytest.mark.asyncio
 async def test_plan_and_dispatch_batch():
     """测试：并行执行的批量规划。"""
+
     # Mock LLM responses for planning and parallel analysis
     class BatchMockLLMClient(BaseLLMClient):
         def __init__(self):
             super().__init__()
             self.call_count = 0
-            
+
         async def complete(self, prompt: str) -> str:
             import json
-            
+
             if self.call_count == 0:
                 # First call: planning response
                 self.call_count += 1
-                return json.dumps({
-                    "analysis": "Initial task decomposition",
-                    "task_updates": [
-                        {
-                            "action": "add",
-                            "parent_id": None,
-                            "task": {
-                                "id": "task1",
-                                "description": "Research Tokyo attractions",
-                                "status": "pending"
-                            }
-                        },
-                        {
-                            "action": "add", 
-                            "parent_id": None,
-                            "task": {
-                                "id": "task2",
-                                "description": "Check weather forecast",
-                                "status": "pending"
-                            }
-                        }
-                    ],
-                    "next_action": {"task_id": "task1"}
-                })
+                return json.dumps(
+                    {
+                        "analysis": "Initial task decomposition",
+                        "task_updates": [
+                            {
+                                "action": "add",
+                                "parent_id": None,
+                                "task": {
+                                    "id": "task1",
+                                    "description": "Research Tokyo attractions",
+                                    "status": "pending",
+                                },
+                            },
+                            {
+                                "action": "add",
+                                "parent_id": None,
+                                "task": {
+                                    "id": "task2",
+                                    "description": "Check weather forecast",
+                                    "status": "pending",
+                                },
+                            },
+                        ],
+                        "next_action": {"task_id": "task1"},
+                    }
+                )
             else:
                 # Second call: parallel analysis response
-                return json.dumps({
-                    "analysis": "Both tasks can run in parallel",
-                    "parallel_task_ids": ["task1", "task2"],
-                    "reasoning": "No resource conflicts between research and weather check"
-                })
-        
+                return json.dumps(
+                    {
+                        "analysis": "Both tasks can run in parallel",
+                        "parallel_task_ids": ["task1", "task2"],
+                        "reasoning": "No resource conflicts between research and weather check",
+                    }
+                )
+
         async def complete_with_context(self, messages: list) -> str:
             return await self.complete("")
-        
+
         async def complete_with_functions(self, messages: list, functions: list, **kwargs) -> dict:
             content = await self.complete("")
             return {"content": content, "finish_reason": "stop"}
-    
+
     planner = DynamicPlanner(BatchMockLLMClient())
-    
+
     updated_tasks, parallel_tasks = await planner.plan_and_dispatch_batch(
-        goal="Plan Tokyo trip",
-        current_tasks=[],
-        execution_history=[]
+        goal="Plan Tokyo trip", current_tasks=[], execution_history=[]
     )
-    
+
     # Verify results
     assert len(updated_tasks) == 2
     assert len(parallel_tasks) == 2
@@ -300,56 +295,58 @@ async def test_plan_and_dispatch_batch():
     assert parallel_tasks[1].id == "task2"
 
 
-@pytest.mark.asyncio 
+@pytest.mark.asyncio
 async def test_parallel_execution_with_dependencies():
     """测试：带依赖关系的并行执行分析。"""
     existing_tasks = [
         Task(id="task1", description="Book hotel", status=TaskStatus.PENDING),
         Task(id="task2", description="Check hotel booking", status=TaskStatus.PENDING),
-        Task(id="task3", description="Research restaurants", status=TaskStatus.PENDING)
+        Task(id="task3", description="Research restaurants", status=TaskStatus.PENDING),
     ]
-    
+
     class DependencyMockLLMClient(BaseLLMClient):
         def __init__(self):
             super().__init__()
             self.call_count = 0
-            
+
         async def complete(self, prompt: str) -> str:
             import json
-            
+
             if self.call_count == 0:
                 # First call: planning response
                 self.call_count += 1
-                return json.dumps({
-                    "analysis": "Continue with existing tasks",
-                    "task_updates": [],
-                    "next_action": {"task_id": "task1"}
-                })
+                return json.dumps(
+                    {
+                        "analysis": "Continue with existing tasks",
+                        "task_updates": [],
+                        "next_action": {"task_id": "task1"},
+                    }
+                )
             else:
                 # Second call: parallel analysis that excludes dependent task
-                return json.dumps({
-                    "analysis": "Task2 depends on Task1, but Task3 is independent",
-                    "parallel_task_ids": ["task1", "task3"],
-                    "reasoning": "Hotel booking and restaurant research can run in parallel",
-                    "excluded_tasks": {"task2": "Depends on task1 completion"}
-                })
-        
+                return json.dumps(
+                    {
+                        "analysis": "Task2 depends on Task1, but Task3 is independent",
+                        "parallel_task_ids": ["task1", "task3"],
+                        "reasoning": "Hotel booking and restaurant research can run in parallel",
+                        "excluded_tasks": {"task2": "Depends on task1 completion"},
+                    }
+                )
+
         async def complete_with_context(self, messages: list) -> str:
             return await self.complete("")
-        
+
         async def complete_with_functions(self, messages: list, functions: list, **kwargs) -> dict:
             content = await self.complete("")
             return {"content": content, "finish_reason": "stop"}
-    
+
     planner = DynamicPlanner(DependencyMockLLMClient())
     planner.task_list = existing_tasks
-    
-    updated_tasks, parallel_tasks = await planner.plan_and_dispatch_batch(
-        goal="Plan Tokyo trip",
-        current_tasks=existing_tasks,
-        execution_history=[]
+
+    _updated_tasks, parallel_tasks = await planner.plan_and_dispatch_batch(
+        goal="Plan Tokyo trip", current_tasks=existing_tasks, execution_history=[]
     )
-    
+
     # Should return task1 and task3, excluding dependent task2
     assert len(parallel_tasks) == 2
     task_ids = [t.id for t in parallel_tasks]
@@ -362,15 +359,13 @@ async def test_parallel_execution_with_dependencies():
 async def test_identify_parallel_tasks_single_task():
     """测试：当 max_parallel=1 时的并行任务识别。"""
     primary_task = Task(id="task1", description="Main task", status=TaskStatus.PENDING)
-    
+
     planner = DynamicPlanner(MockLLMClient())
-    
+
     parallel_tasks = await planner._identify_parallel_tasks(
-        tasks=[primary_task],
-        primary_task=primary_task,
-        max_parallel=1
+        tasks=[primary_task], primary_task=primary_task, max_parallel=1
     )
-    
+
     assert len(parallel_tasks) == 1
     assert parallel_tasks[0] == primary_task
 
@@ -378,33 +373,33 @@ async def test_identify_parallel_tasks_single_task():
 def test_progressive_user_guidance():
     """测试：渐进式用户引导功能。"""
     config = PlannerConfig(enable_user_interaction=True)
-    
+
     # Mock LLM responses for ambiguity analysis and question generation
     llm_responses = {
-        "ambiguity_analysis": json.dumps({
-            "needs_guidance": True,
-            "ambiguous_aspects": [
-                {
-                    "aspect": "目的地",
-                    "description": "用户没有指定具体目的地",
-                    "priority": "high"
-                }
-            ],
-            "suggested_questions": ["您想去哪里旅行？"]
-        }),
-        "question_generation": json.dumps({
-            "questions": ["为了给您制定更合适的方案，您想去哪里呢？"]
-        })
+        "ambiguity_analysis": json.dumps(
+            {
+                "needs_guidance": True,
+                "ambiguous_aspects": [
+                    {
+                        "aspect": "目的地",
+                        "description": "用户没有指定具体目的地",
+                        "priority": "high",
+                    }
+                ],
+                "suggested_questions": ["您想去哪里旅行？"],
+            }
+        ),
+        "question_generation": json.dumps(
+            {"questions": ["为了给您制定更合适的方案，您想去哪里呢？"]}
+        ),
     }
-    
+
     llm_client = MockLLMClient(llm_responses)
     planner = DynamicPlanner(llm_client, config)
-    
+
     # Test progressive guidance
-    result = asyncio.run(planner._progressive_user_guidance(
-        "帮我规划旅行", [], []
-    ))
-    
+    result = asyncio.run(planner._progressive_user_guidance("帮我规划旅行", [], []))
+
     # Should return None as we don't have actual user interaction
     assert result is None
 
@@ -414,51 +409,43 @@ def test_user_interaction_disabled():
     config = PlannerConfig(enable_user_interaction=False)
     llm_client = MockLLMClient()
     planner = DynamicPlanner(llm_client, config)
-    
+
     # Should return None when disabled
-    result = asyncio.run(planner._progressive_user_guidance(
-        "帮我规划旅行", [], []
-    ))
-    
+    result = asyncio.run(planner._progressive_user_guidance("帮我规划旅行", [], []))
+
     assert result is None
 
 
 def test_plan_and_dispatch_with_user_feedback():
     """测试：带用户反馈的规划。"""
     config = PlannerConfig(enable_user_interaction=True)
-    
+
     # Mock successful planning response
-    planning_response = json.dumps({
-        "analysis": "基于用户反馈调整计划",
-        "task_updates": [
-            {
-                "action": "add",
-                "task": {
-                    "id": "task1",
-                    "description": "基于用户反馈的新任务",
-                    "status": "pending"
+    planning_response = json.dumps(
+        {
+            "analysis": "基于用户反馈调整计划",
+            "task_updates": [
+                {
+                    "action": "add",
+                    "task": {
+                        "id": "task1",
+                        "description": "基于用户反馈的新任务",
+                        "status": "pending",
+                    },
                 }
-            }
-        ],
-        "next_action": {
-            "task_id": "task1",
-            "reasoning": "执行用户建议的任务"
+            ],
+            "next_action": {"task_id": "task1", "reasoning": "执行用户建议的任务"},
         }
-    })
-    
+    )
+
     # Create response data in the format expected by MockLLMClient
     response_data = json.loads(planning_response)
     llm_client = MockLLMClient(response_data)
     planner = DynamicPlanner(llm_client, config)
-    
+
     # Test with user feedback
-    result = asyncio.run(planner.plan_and_dispatch(
-        "规划旅行",
-        [],
-        [],
-        user_feedback="我想去日本"
-    ))
-    
+    result = asyncio.run(planner.plan_and_dispatch("规划旅行", [], [], user_feedback="我想去日本"))
+
     updated_tasks, next_task = result
     assert len(updated_tasks) == 1
     assert next_task is not None

@@ -22,23 +22,20 @@ if not logger.handlers:
 
 class ToolError(Exception):
     """工具执行错误基类。"""
+
     pass
 
 
 class BaseTool(ABC):
     """
     所有工具的抽象基类。
-    
+
     提供统一的工具接口，支持同步和异步执行，
     包含权限检查、错误处理和日志记录功能。
     """
 
     def __init__(
-        self,
-        name: str,
-        description: str,
-        required_permissions: list[str] | None = None,
-        **kwargs
+        self, name: str, description: str, required_permissions: list[str] | None = None, **kwargs
     ):
         self.name = name
         self.description = description
@@ -53,13 +50,13 @@ class BaseTool(ABC):
     async def execute(self, **kwargs) -> Any:
         """
         异步执行工具。
-        
+
         Args:
             **kwargs: 工具执行参数
-            
+
         Returns:
             工具执行结果
-            
+
         Raises:
             ToolError: 工具执行失败
         """
@@ -68,7 +65,7 @@ class BaseTool(ABC):
     def execute_sync(self, **kwargs) -> Any:
         """
         同步执行工具（默认实现抛出异常）。
-        
+
         子类可以重写此方法提供同步版本。
         """
         raise NotImplementedError(f"Tool {self.name} does not support synchronous execution")
@@ -76,10 +73,10 @@ class BaseTool(ABC):
     async def validate_permissions(self, available_permissions: list[str]) -> bool:
         """
         验证工具所需权限。
-        
+
         Args:
             available_permissions: 当前可用权限列表
-            
+
         Returns:
             是否有足够权限执行工具
         """
@@ -92,7 +89,7 @@ class BaseTool(ABC):
     async def safe_execute(self, **kwargs) -> dict[str, Any]:
         """
         安全执行工具，包含错误处理和统计。
-        
+
         Returns:
             包含执行结果和状态的字典
         """
@@ -147,11 +144,7 @@ class BaseTool(ABC):
             }
 
     async def execute_with_retry(
-        self,
-        *,
-        max_retries: int = 0,
-        backoff_ms: int = 0,
-        **kwargs
+        self, *, max_retries: int = 0, backoff_ms: int = 0, **kwargs
     ) -> dict[str, Any]:
         """
         带重试的安全执行包装。
@@ -160,7 +153,6 @@ class BaseTool(ABC):
         - 返回结构与 `safe_execute` 相同
         """
         attempts = 0
-        last_result: dict[str, Any] | None = None
 
         # 非幂等工具默认不重试
         is_idempotent = bool(self.metadata.get("is_idempotent", True))
@@ -170,7 +162,6 @@ class BaseTool(ABC):
         while True:
             attempts += 1
             result = await self.safe_execute(**kwargs)
-            last_result = result
             if result.get("success"):
                 return result
 
@@ -180,6 +171,7 @@ class BaseTool(ABC):
             if backoff_ms > 0:
                 try:
                     import asyncio
+
                     await asyncio.sleep(backoff_ms / 1000.0)
                 except Exception:
                     pass
@@ -192,7 +184,7 @@ class BaseTool(ABC):
             "error_count": self.error_count,
             "error_rate": self.error_count / max(self.call_count, 1),
             "required_permissions": self.required_permissions,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
 
     def __str__(self) -> str:
@@ -202,7 +194,7 @@ class BaseTool(ABC):
 class ToolRegistry:
     """
     工具注册和管理系统。
-    
+
     支持动态注册、查找和管理工具实例。
     """
 
@@ -213,7 +205,7 @@ class ToolRegistry:
     def register_tool(self, tool: BaseTool) -> None:
         """
         注册工具实例。
-        
+
         Args:
             tool: 工具实例
         """
@@ -229,7 +221,7 @@ class ToolRegistry:
     def register_tool_class(self, tool_class: type[BaseTool], name: str) -> None:
         """
         注册工具类。
-        
+
         Args:
             tool_class: 工具类
             name: 工具名称
@@ -247,11 +239,11 @@ class ToolRegistry:
     def create_tool(self, name: str, **kwargs) -> BaseTool | None:
         """
         从注册的工具类创建工具实例。
-        
+
         Args:
             name: 工具名称
             **kwargs: 工具初始化参数
-            
+
         Returns:
             工具实例或None
         """
@@ -276,10 +268,10 @@ class ToolRegistry:
     def get_tools_by_permission(self, permissions: list[str]) -> list[BaseTool]:
         """
         根据权限筛选工具。
-        
+
         Args:
             permissions: 可用权限列表
-            
+
         Returns:
             有权限使用的工具列表
         """
@@ -295,10 +287,10 @@ class ToolRegistry:
     def unregister_tool(self, name: str) -> bool:
         """
         注销工具。
-        
+
         Args:
             name: 工具名称
-            
+
         Returns:
             是否成功注销
         """
@@ -319,7 +311,7 @@ class ToolRegistry:
             "total_calls": total_calls,
             "total_errors": total_errors,
             "global_error_rate": total_errors / max(total_calls, 1),
-            "tools": [tool.get_stats() for tool in self._tools.values()]
+            "tools": [tool.get_stats() for tool in self._tools.values()],
         }
 
 

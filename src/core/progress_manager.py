@@ -1,11 +1,14 @@
 """实时进度管理器，提供系统级状态跟踪和事件通知。"""
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
-from .models import ProgressUpdate, SystemState, Task, TaskStatus
+from .models import ProgressUpdate, SystemState, Task, TaskStatus, UserEvent
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +24,7 @@ if not logger.handlers:
 class ProgressManager:
     """
     集中式进度管理器，负责跟踪系统状态和任务进展。
-    
+
     作为论文中的"单一真相源"，直接管理 Task 对象，
     确保所有组件都能看到一致的任务状态。
     """
@@ -37,20 +40,60 @@ class ProgressManager:
         # 历史记录
         self.progress_history: list[ProgressUpdate] = []
         self.event_queue: asyncio.Queue = asyncio.Queue()
+        self.user_event_queue: asyncio.Queue = asyncio.Queue()
+        self.user_event_history: list[dict] = []  # 保存所有用户事件历史
 
         # 系统状态
         self.system_start_time = datetime.now()
         self.subscribers: list[callable] = []
         self.session_id: str = "current"
 
+        # 事件持久化
+        self._event_history_file: str | None = None
+
     def set_session_id(self, session_id: str) -> None:
         """Set current session identifier for state snapshots."""
         self.session_id = session_id
+        # 设置事件历史文件路径
+        self._event_history_file = f"logs/events_{session_id}.json"
+        self._load_event_history()
+
+    def _load_event_history(self) -> None:
+        """从文件加载事件历史"""
+        if not self._event_history_file:
+            return
+
+        try:
+            if os.path.exists(self._event_history_file):
+                with open(self._event_history_file, encoding="utf-8") as f:
+                    self.user_event_history = json.load(f)
+                logger.info(
+                    f"{PROG_LOG_PREFIX} loaded_event_history file={self._event_history_file} count={len(self.user_event_history)}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"{PROG_LOG_PREFIX} failed_to_load_event_history file={self._event_history_file} error={e}"
+            )
+            self.user_event_history = []
+
+    def _save_event_history(self) -> None:
+        """保存事件历史到文件"""
+        if not self._event_history_file:
+            return
+
+        try:
+            os.makedirs(os.path.dirname(self._event_history_file), exist_ok=True)
+            with open(self._event_history_file, "w", encoding="utf-8") as f:
+                json.dump(self.user_event_history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(
+                f"{PROG_LOG_PREFIX} failed_to_save_event_history file={self._event_history_file} error={e}"
+            )
 
     def set_task_tree(self, tasks: list[Task]) -> None:
         """
         设置任务树（单一真相源）。
-        
+
         Args:
             tasks: 完整的任务树
         """
@@ -82,12 +125,12 @@ class ProgressManager:
     def update_task_status(self, task_id: str, status: TaskStatus, result: Any = None) -> bool:
         """
         直接更新任务状态。
-        
+
         Args:
             task_id: 任务ID
             status: 新状态
             result: 任务结果（可选）
-            
+
         Returns:
             是否成功更新
         """
@@ -106,7 +149,7 @@ class ProgressManager:
         agent_id: str | None = None,
         status: str = "in_progress",
         message: str = "",
-        details: dict[str, Any] | None = None
+        details: dict[str, Any] | None = None,
     ):
         """更新任务进度并发送事件通知。"""
 
@@ -117,7 +160,7 @@ class ProgressManager:
             status=status,
             message=message,
             timestamp=datetime.now(),
-            details=details or {}
+            details=details or {},
         )
 
         # 更新 Task 对象状态
@@ -133,10 +176,8 @@ class ProgressManager:
             if "resume_token" in details:
                 task.resume_token = details.get("resume_token")
             if "subtree_revision" in details:
-                try:
+                with contextlib.suppress(Exception):
                     task.subtree_revision = int(details.get("subtree_revision"))
-                except Exception:
-                    pass
 
         # 更新智能体状态
         if agent_id:
@@ -144,7 +185,7 @@ class ProgressManager:
                 self.active_agents[agent_id] = {
                     "task_id": task_id,
                     "created_at": datetime.now(),
-                    "status": "active"
+                    "status": "active",
                 }
             self.active_agents[agent_id]["last_activity"] = datetime.now()
             self.active_agents[agent_id]["current_status"] = status
@@ -157,26 +198,30 @@ class ProgressManager:
             self.progress_history = self.progress_history[-800:]  # 保留最近800条
 
         # 发送事件通知
-        await self.event_queue.put({
-            "type": "progress_update",
-            "data": progress_update.model_dump(),
-            "timestamp": datetime.now().isoformat()
-        })
+        await self.event_queue.put(
+            {
+                "type": "progress_update",
+                "data": progress_update.model_dump(),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
         logger.info(f"{PROG_LOG_PREFIX} update task={task_id} status={status} msg={message[:80]}")
 
         # 派发专门事件：当状态为 blocked 或 superseded 时
         if status in ["blocked", "superseded"]:
-            await self.event_queue.put({
-                "type": f"task_{status}",
-                "data": {
-                    "task_id": task_id,
-                    "agent_id": agent_id,
-                    "blocked_reason": (details or {}).get("blocked_reason"),
-                    "resume_token": (details or {}).get("resume_token"),
-                    "subtree_revision": (details or {}).get("subtree_revision"),
-                },
-                "timestamp": datetime.now().isoformat()
-            })
+            await self.event_queue.put(
+                {
+                    "type": f"task_{status}",
+                    "data": {
+                        "task_id": task_id,
+                        "agent_id": agent_id,
+                        "blocked_reason": (details or {}).get("blocked_reason"),
+                        "resume_token": (details or {}).get("resume_token"),
+                        "subtree_revision": (details or {}).get("subtree_revision"),
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
 
         # 当 Planner 更新任务列表时，打印美观的任务树（Markdown 结构）
         if task_id == "system" and status == "updated":
@@ -194,9 +239,8 @@ class ProgressManager:
                 )
 
         # 如果任务完成或失败，更新智能体状态
-        if status in ["completed", "failed"]:
-            if agent_id and agent_id in self.active_agents:
-                self.active_agents[agent_id]["status"] = "completed"
+        if status in ["completed", "failed"] and agent_id and agent_id in self.active_agents:
+            self.active_agents[agent_id]["status"] = "completed"
 
     def _render_task_tree_markdown(self) -> str:
         """将当前任务树渲染为 Markdown 树形结构。"""
@@ -224,43 +268,59 @@ class ProgressManager:
         add_task_lines(self.task_tree, 0)
         return "\n".join(lines)
 
-    async def submit_final_report(
-        self,
-        task_id: str,
-        agent_id: str,
-        report: dict[str, Any]
-    ):
+    async def submit_final_report(self, task_id: str, agent_id: str, report: dict[str, Any]):
         """提交最终执行报告。"""
 
         # 更新任务结果
         task = self.get_task(task_id)
         if task:
             task.result = report
-            task.status = TaskStatus.COMPLETED if report.get("status_update", {}).get("completed", False) else TaskStatus.FAILED
+            # 优先使用报告中的状态，如果没有则默认为已完成
+            report_completed = report.get("status_update", {}).get("completed", True)
+            task.status = TaskStatus.COMPLETED if report_completed else TaskStatus.FAILED
             task.updated_at = datetime.now()
+
+        # 安全地获取final_outcome并切片
+        final_outcome = report.get("conclusion_summary", {}).get("final_outcome", "Unknown")
+
+        # 详细日志：检查 final_outcome 类型
+        outcome_type = type(final_outcome).__name__
+        logger.debug(
+            f"{PROG_LOG_PREFIX} final_report_outcome task={task_id} "
+            f"outcome_type={outcome_type} "
+            f"is_str={isinstance(final_outcome, str)} "
+            f"is_slice={isinstance(final_outcome, slice)} "
+            f"repr={repr(final_outcome)[:200]}"
+        )
+
+        if isinstance(final_outcome, str):
+            outcome_preview = final_outcome[:100]
+        else:
+            logger.warning(
+                f"{PROG_LOG_PREFIX} final_outcome_not_string task={task_id} "
+                f"type={outcome_type} converting_to_str"
+            )
+            outcome_preview = str(final_outcome)[:100]
 
         await self.update_progress(
             task_id=task_id,
             agent_id=agent_id,
             status="completed" if task and task.status == TaskStatus.COMPLETED else "failed",
-            message=f"任务完成，结果: {report.get('conclusion_summary', {}).get('final_outcome', 'Unknown')[:100]}",
-            details={
-                "final_report": report,
-                "completion_time": datetime.now().isoformat()
-            }
+            message=f"任务完成，结果: {outcome_preview}",
+            details={"final_report": report, "completion_time": datetime.now().isoformat()},
         )
 
         # 发送完成事件
-        await self.event_queue.put({
-            "type": "task_completed",
-            "data": {
-                "task_id": task_id,
-                "agent_id": agent_id,
-                "report": report
-            },
-            "timestamp": datetime.now().isoformat()
-        })
-        logger.info(f"{PROG_LOG_PREFIX} final_report task={task_id} status={(task.status.value if task else 'unknown')}")
+        await self.event_queue.put(
+            {
+                "type": "task_completed",
+                "data": {"task_id": task_id, "agent_id": agent_id, "report": report},
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        logger.info(
+            f"{PROG_LOG_PREFIX} final_report task={task_id} status={(task.status.value if task else 'unknown')}"
+        )
 
     def get_current_state(self) -> SystemState:
         """获取当前系统状态快照。"""
@@ -281,7 +341,8 @@ class ProgressManager:
 
         # 获取活跃智能体列表（状态不是completed的智能体）
         active_agent_ids = [
-            agent_id for agent_id, agent_info in self.active_agents.items()
+            agent_id
+            for agent_id, agent_info in self.active_agents.items()
             if agent_info.get("status") != "completed"
         ]
 
@@ -306,9 +367,7 @@ class ProgressManager:
             system_health = "critical"
 
         # Estimate completion time using recent completion rate (linear extrapolation)
-        completed_updates = [
-            u.timestamp for u in self.progress_history if u.status == "completed"
-        ]
+        completed_updates = [u.timestamp for u in self.progress_history if u.status == "completed"]
         estimated_completion_dt = None
         remaining_tasks = max(total_tasks - completed_tasks, 0)
         if remaining_tasks > 0 and len(completed_updates) >= 2:
@@ -333,7 +392,7 @@ class ProgressManager:
             recent_events=recent_events,
             overall_progress=overall_progress,
             estimated_completion=estimated_completion_dt,
-            system_health=system_health
+            system_health=system_health,
         )
 
     async def get_task_progress(self, task_id: str) -> dict[str, Any] | None:
@@ -344,10 +403,7 @@ class ProgressManager:
             return None
 
         # 获取该任务的进度历史
-        task_history = [
-            update for update in self.progress_history
-            if update.task_id == task_id
-        ]
+        task_history = [update for update in self.progress_history if update.task_id == task_id]
 
         return {
             "task_id": task_id,
@@ -357,7 +413,7 @@ class ProgressManager:
             "last_update": task.updated_at.isoformat() if task.updated_at else None,
             "result": task.result,
             "subtasks": len(task.subtasks) if task.subtasks else 0,
-            "progress_history": [update.model_dump() for update in task_history[-10:]]  # 最近10条
+            "progress_history": [update.model_dump() for update in task_history[-10:]],  # 最近10条
         }
 
     async def get_events(self, timeout: float = 1.0) -> dict[str, Any] | None:
@@ -366,8 +422,47 @@ class ProgressManager:
         try:
             event = await asyncio.wait_for(self.event_queue.get(), timeout=timeout)
             return event
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
+
+    async def emit_user_event(self, user_event: UserEvent):
+        """发送用户事件到队列"""
+        event_data = {
+            "type": "user_event",
+            "data": user_event.to_display_dict(),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # 放入实时队列
+        await self.user_event_queue.put(event_data)
+
+        # 保存到历史记录
+        self.user_event_history.append(event_data)
+
+        # 限制历史记录长度（保留最近500条事件）
+        if len(self.user_event_history) > 500:
+            self.user_event_history = self.user_event_history[-500:]
+
+        # 持久化到文件
+        self._save_event_history()
+
+        logger.info(
+            f"{PROG_LOG_PREFIX} user_event "
+            f"type={user_event.event_type.value} "
+            f"title={user_event.title[:50]}"
+        )
+
+    async def get_user_event(self, timeout: float = 1.0) -> dict | None:
+        """获取下一个用户事件"""
+        try:
+            event = await asyncio.wait_for(self.user_event_queue.get(), timeout=timeout)
+            return event
+        except TimeoutError:
+            return None
+
+    def get_user_event_history(self) -> list[dict]:
+        """获取所有用户事件历史记录"""
+        return self.user_event_history.copy()
 
     def cleanup_completed_tasks(self, older_than_hours: int = 24):
         """清理已完成的旧任务记录。"""
@@ -377,8 +472,11 @@ class ProgressManager:
         # 清理已完成的旧任务
         tasks_to_remove = []
         for task in self.get_all_tasks():
-            if (task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] and
-                task.updated_at and task.updated_at < cutoff_time):
+            if (
+                task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]
+                and task.updated_at
+                and task.updated_at < cutoff_time
+            ):
                 tasks_to_remove.append(task.id)
 
         # 清理智能体状态
@@ -395,33 +493,33 @@ class ProgressManager:
     def get_statistics(self) -> dict[str, Any]:
         """获取系统运行统计信息。"""
 
-        current_state = self.get_current_state()
+        self.get_current_state()
 
         # 计算平均任务执行时间
         completed_tasks = self.find_tasks_by_status(TaskStatus.COMPLETED)
 
         avg_execution_time = 0.0
         if completed_tasks:
-            valid_tasks = [
-                task for task in completed_tasks
-                if task.created_at and task.updated_at
-            ]
+            valid_tasks = [task for task in completed_tasks if task.created_at and task.updated_at]
             if valid_tasks:
-                total_time = sum([
-                    (task.updated_at - task.created_at).total_seconds()
-                    for task in valid_tasks
-                ])
+                total_time = sum(
+                    [(task.updated_at - task.created_at).total_seconds() for task in valid_tasks]
+                )
                 avg_execution_time = total_time / len(valid_tasks)
 
         return {
             "total_tasks_processed": len(self.get_all_tasks()),
             "success_rate": (
-                len(self.find_tasks_by_status(TaskStatus.COMPLETED)) / max(len(self.get_all_tasks()), 1) * 100
+                len(self.find_tasks_by_status(TaskStatus.COMPLETED))
+                / max(len(self.get_all_tasks()), 1)
+                * 100
             ),
             "average_execution_time": avg_execution_time,
-            "active_agents": len([a for a in self.active_agents.values() if a.get("status") != "completed"]),
+            "active_agents": len(
+                [a for a in self.active_agents.values() if a.get("status") != "completed"]
+            ),
             "total_progress_updates": len(self.progress_history),
-            "current_queue_size": self.event_queue.qsize()
+            "current_queue_size": self.event_queue.qsize(),
         }
 
     def subscribe(self, callback: callable) -> None:

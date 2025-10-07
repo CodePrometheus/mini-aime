@@ -16,6 +16,7 @@ from openai.types.chat import ChatCompletion
 
 from src.config.settings import settings
 
+
 try:
     from prometheus_client import Counter, Histogram
 except Exception:  # pragma: no cover - optional dependency during tests
@@ -75,9 +76,7 @@ class BaseLLMClient(ABC):
         if self._metrics_enabled:
             # Define metrics only once per process
             global _LLM_CALLS, _LLM_LATENCY
-            try:
-                _LLM_CALLS
-            except NameError:
+            if "_LLM_CALLS" not in globals():
                 _LLM_CALLS = Counter(
                     "llm_calls_total",
                     "Total LLM calls",
@@ -117,12 +116,13 @@ class BaseLLMClient(ABC):
                     model = getattr(self, "_model", "unknown")
                     method = getattr(func, "__name__", "unknown")
                     import time
+
                     start = time.monotonic()
                     try:
                         result = await func(*args, **kwargs)
                         _LLM_CALLS.labels(provider, model, method, "success").inc()
                         return result
-                    except Exception as e:  # re-counted below in error path as well
+                    except Exception:  # re-counted below in error path as well
                         _LLM_CALLS.labels(provider, model, method, "error").inc()
                         raise
                     finally:
@@ -209,10 +209,7 @@ class BaseLLMClient(ABC):
 
     @abstractmethod
     async def complete_with_functions(
-        self,
-        messages: list[dict[str, str]],
-        functions: list[dict[str, Any]],
-        **kwargs
+        self, messages: list[dict[str, str]], functions: list[dict[str, Any]], **kwargs
     ) -> dict[str, Any]:
         """Complete with function calling support."""
         raise NotImplementedError
@@ -270,6 +267,19 @@ class OpenAICompatibleClient(BaseLLMClient):
         self._provider_name = provider
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
 
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if hasattr(self, "_client") and self._client:
+            await self._client.close()
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
+
     async def complete(
         self,
         prompt: str,
@@ -281,6 +291,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         try:
             if getattr(self, "_metrics_enabled", False):
                 import time
+
                 start = time.monotonic()
                 try:
                     resp: ChatCompletion = await self._client.chat.completions.create(
@@ -289,13 +300,19 @@ class OpenAICompatibleClient(BaseLLMClient):
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete", "success").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name, model or self._model, "complete", "success"
+                    ).inc()
                     return resp.choices[0].message.content or ""
                 except Exception:
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete", "error").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name, model or self._model, "complete", "error"
+                    ).inc()
                     raise
                 finally:
-                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete").observe(time.monotonic() - start)
+                    _LLM_LATENCY.labels(
+                        self._provider_name, model or self._model, "complete"
+                    ).observe(time.monotonic() - start)
             else:
                 resp: ChatCompletion = await self._client.chat.completions.create(
                     model=model or self._model,
@@ -321,11 +338,14 @@ class OpenAICompatibleClient(BaseLLMClient):
         """Estimate token count for given text."""
         return len(text) // 4
 
-    async def complete_with_context(self, messages: list[dict[str, str]], model: str | None = None) -> str:
+    async def complete_with_context(
+        self, messages: list[dict[str, str]], model: str | None = None
+    ) -> str:
         """Complete with conversation context using native chat format."""
         try:
             if getattr(self, "_metrics_enabled", False):
                 import time
+
                 start = time.monotonic()
                 try:
                     resp: ChatCompletion = await self._client.chat.completions.create(
@@ -333,13 +353,22 @@ class OpenAICompatibleClient(BaseLLMClient):
                         messages=messages,
                         temperature=0.2,
                     )
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_context", "success").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name,
+                        model or self._model,
+                        "complete_with_context",
+                        "success",
+                    ).inc()
                     return resp.choices[0].message.content or ""
                 except Exception:
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_context", "error").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name, model or self._model, "complete_with_context", "error"
+                    ).inc()
                     raise
                 finally:
-                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_with_context").observe(time.monotonic() - start)
+                    _LLM_LATENCY.labels(
+                        self._provider_name, model or self._model, "complete_with_context"
+                    ).observe(time.monotonic() - start)
             else:
                 resp: ChatCompletion = await self._client.chat.completions.create(
                     model=model or self._model,
@@ -362,6 +391,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         try:
             if getattr(self, "_metrics_enabled", False):
                 import time
+
                 start = time.monotonic()
                 try:
                     resp: ChatCompletion = await self._client.chat.completions.create(
@@ -370,14 +400,20 @@ class OpenAICompatibleClient(BaseLLMClient):
                         temperature=temperature,
                         response_format={"type": "json_object"},
                     )
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_chat_json", "success").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name, model or self._model, "complete_chat_json", "success"
+                    ).inc()
                     content = resp.choices[0].message.content or "{}"
                     return json.loads(content)
                 except Exception:
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_chat_json", "error").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name, model or self._model, "complete_chat_json", "error"
+                    ).inc()
                     raise
                 finally:
-                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_chat_json").observe(time.monotonic() - start)
+                    _LLM_LATENCY.labels(
+                        self._provider_name, model or self._model, "complete_chat_json"
+                    ).observe(time.monotonic() - start)
             else:
                 resp: ChatCompletion = await self._client.chat.completions.create(
                     model=model or self._model,
@@ -396,13 +432,14 @@ class OpenAICompatibleClient(BaseLLMClient):
         messages: list[dict[str, str]],
         functions: list[dict[str, Any]],
         model: str | None = None,
-        **kwargs
+        **kwargs,
     ) -> dict[str, Any]:
         """Complete with function calling support using DeepSeek API."""
         try:
             temperature = kwargs.pop("temperature", 0.1)
             if getattr(self, "_metrics_enabled", False):
                 import time
+
                 start = time.monotonic()
                 try:
                     resp: ChatCompletion = await self._client.chat.completions.create(
@@ -411,14 +448,23 @@ class OpenAICompatibleClient(BaseLLMClient):
                         tools=functions,
                         tool_choice="auto",
                         temperature=temperature,
-                        **kwargs
+                        **kwargs,
                     )
                 except Exception:
-                    _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_functions", "error").inc()
+                    _LLM_CALLS.labels(
+                        self._provider_name,
+                        model or self._model,
+                        "complete_with_functions",
+                        "error",
+                    ).inc()
                     raise
                 finally:
-                    _LLM_LATENCY.labels(self._provider_name, model or self._model, "complete_with_functions").observe(time.monotonic() - start)
-                _LLM_CALLS.labels(self._provider_name, model or self._model, "complete_with_functions", "success").inc()
+                    _LLM_LATENCY.labels(
+                        self._provider_name, model or self._model, "complete_with_functions"
+                    ).observe(time.monotonic() - start)
+                _LLM_CALLS.labels(
+                    self._provider_name, model or self._model, "complete_with_functions", "success"
+                ).inc()
             else:
                 resp: ChatCompletion = await self._client.chat.completions.create(
                     model=model or self._model,
@@ -426,7 +472,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                     tools=functions,
                     tool_choice="auto",
                     temperature=temperature,
-                    **kwargs
+                    **kwargs,
                 )
 
             choice = resp.choices[0]
@@ -438,17 +484,14 @@ class OpenAICompatibleClient(BaseLLMClient):
                 return {
                     "function_call": {
                         "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
+                        "arguments": tool_call.function.arguments,
                     },
                     "content": message.content,
-                    "finish_reason": choice.finish_reason
+                    "finish_reason": choice.finish_reason,
                 }
             else:
                 # 没有函数调用，返回普通文本响应
-                return {
-                    "content": message.content or "",
-                    "finish_reason": choice.finish_reason
-                }
+                return {"content": message.content or "", "finish_reason": choice.finish_reason}
 
         except Exception as e:
             logger.debug(f"OpenAI API call with functions failed: {e!s}")

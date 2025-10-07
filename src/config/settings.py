@@ -23,11 +23,13 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
     brave_search_api_key: str = Field(default="", alias="BRAVE_SEARCH_API_KEY")
     weather_api_key: str = Field(default="", alias="WEATHER_API_KEY")
-    # 旅行相关服务（固定提供方）
+    # 通用服务（固定提供方）
     exchange_rate_api_key: str = Field(default="", alias="EXCHANGE_RATE_API_KEY")
     timezonedb_api_key: str = Field(default="", alias="TIMEZONEDB_API_KEY")
     nager_date_base_url: str = Field(default="https://date.nager.at", alias="NAGER_DATE_BASE_URL")
-    nominatim_user_agent: str = Field(default="mini-aime/1.0 (contact@example.com)", alias="NOMINATIM_USER_AGENT")
+    nominatim_user_agent: str = Field(
+        default="mini-aime/1.0 (contact@example.com)", alias="NOMINATIM_USER_AGENT"
+    )
 
     # 系统配置
     debug: bool = Field(default=True, alias="DEBUG")

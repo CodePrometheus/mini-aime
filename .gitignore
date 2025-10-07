@@ -244,3 +244,5 @@ cython_debug/
 #.idea/
 
 docs/
+.playwright-mcp/
+logs/

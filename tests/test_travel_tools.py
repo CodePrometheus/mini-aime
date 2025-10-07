@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
 
@@ -13,14 +13,14 @@ class DummyLLMClient(BaseLLMClient):
 
     async def complete_with_functions(
         self,
-        messages: List[Dict[str, Any]],
-        functions: Optional[List[Dict[str, Any]]] = None,
-        function_call: Optional[Dict[str, Any]] = None,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        messages: list[dict[str, Any]],
+        functions: list[dict[str, Any]] | None = None,
+        function_call: dict[str, Any] | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:  # type: ignore[override]
+    ) -> dict[str, Any]:  # type: ignore[override]
         return {"choices": []}
 
 
@@ -72,5 +72,3 @@ def test_get_public_holidays_tool_live():
 
     assert "公共假期" in result
     assert "2025-01-01" in result  # New Year's Day is expected
-
-

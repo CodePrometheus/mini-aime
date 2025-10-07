@@ -3,6 +3,7 @@
 from .base import BaseTool, ToolError, ToolRegistry
 from .code_executor import CodeExecutorTool
 from .file_tools import DirectoryListTool, FileReadTool, FileWriteTool
+from .research_integration_tool import ResearchIntegrationTool
 from .web_tools import WebSearchTool
 
 
@@ -12,6 +13,7 @@ __all__ = [
     "DirectoryListTool",
     "FileReadTool",
     "FileWriteTool",
+    "ResearchIntegrationTool",
     "ToolError",
     "ToolRegistry",
     "WebSearchTool",

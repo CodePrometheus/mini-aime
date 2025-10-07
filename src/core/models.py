@@ -32,6 +32,7 @@ class Task:
     blocked_reason: str | None = None
     resume_token: str | None = None
     subtree_revision: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -108,7 +109,9 @@ class SystemState(BaseModel):
 
     recent_events: list[str] = Field(default_factory=list, description="Recent progress events")
     overall_progress: float = Field(default=0.0, description="Overall task completion ratio [0,1]")
-    estimated_completion: datetime | None = Field(default=None, description="Estimated completion time")
+    estimated_completion: datetime | None = Field(
+        default=None, description="Estimated completion time"
+    )
     system_health: str = Field(default="healthy", description="System health status")
 
     total_agents_created: int = Field(default=0, description="Total agents created")
@@ -167,4 +170,66 @@ DEFAULT_TOOL_BUNDLES = {
         tools=["parse_json", "query_database", "transform_data", "generate_report"],
         required_permissions=["data_access"],
     ),
+    "research_integration": ToolBundle(
+        name="research_integration",
+        description="Integrate and analyze research files, generate comprehensive reports",
+        tools=["integrate_research"],
+        required_permissions=["file_system_access"],
+    ),
 }
+
+
+class UserEventType(Enum):
+    """用户可见的事件类型（基于 ReAct 框架）"""
+
+    THOUGHT = "thought"
+    ACTION = "action"
+    OBSERVATION = "observation"
+    PLANNING = "planning"
+    TASK_UPDATE = "task_update"
+    MILESTONE = "milestone"
+    ERROR = "error"
+    COMPLETION = "completion"
+
+
+class UserEvent(BaseModel):
+    """面向用户的结构化事件"""
+
+    event_type: UserEventType
+    title: str
+    content: str
+    timestamp: datetime
+    agent_id: str | None = None
+    task_id: str | None = None
+    level: str = "info"
+    collapsible: bool = False
+    icon: str | None = None
+    details: dict[str, Any] | None = None
+
+    def to_display_dict(self) -> dict:
+        """转换为前端展示格式"""
+        return {
+            "type": self.event_type.value,
+            "title": self.title,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat(),
+            "level": self.level,
+            "collapsible": self.collapsible,
+            "icon": self.icon or self._default_icon(),
+            "metadata": {"agent_id": self.agent_id, "task_id": self.task_id},
+            "details": self.details or {},
+        }
+
+    def _default_icon(self) -> str:
+        """默认图标映射"""
+        icon_map = {
+            UserEventType.THOUGHT: "💭",
+            UserEventType.ACTION: "⚡",
+            UserEventType.OBSERVATION: "👁️",
+            UserEventType.PLANNING: "🎯",
+            UserEventType.TASK_UPDATE: "📋",
+            UserEventType.MILESTONE: "🎉",
+            UserEventType.ERROR: "⚠️",
+            UserEventType.COMPLETION: "✅",
+        }
+        return icon_map.get(self.event_type, "📌")
