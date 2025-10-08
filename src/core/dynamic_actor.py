@@ -84,7 +84,7 @@ class DynamicActor:
             # 执行配置
             # generate_final_report 任务需要足够的步数来完成：列目录、读文件、整合、生成报告
             if self.task_id == "generate_final_report":
-                max_iterations = 15  # 足够的步数来完成完整流程
+                max_iterations = settings.high_complexity_max_iterations  # 足够的步数来完成完整流程
             elif self.task_id == "task_final_summary":
                 max_iterations = self.config.execution_config.get(
                     "max_iterations", 10

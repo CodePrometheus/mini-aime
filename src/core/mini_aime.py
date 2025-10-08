@@ -43,8 +43,8 @@ class MiniAimeConfig:
 
     def __init__(
         self,
-        max_parallel_agents: int = 3,
-        agent_timeout: int = 300,  # 5 minutes per agent
+        max_parallel_agents: int = None,
+        agent_timeout: int = None,
         enable_persistence: bool = False,
         enable_auto_recovery: bool = True,
         planner_config: PlannerConfig | None = None,
@@ -52,8 +52,8 @@ class MiniAimeConfig:
         retry_backoff_base: int = 2,
         retry_backoff_max: int = 30,
     ):
-        self.max_parallel_agents = max_parallel_agents
-        self.agent_timeout = agent_timeout
+        self.max_parallel_agents = max_parallel_agents or settings.max_parallel_agents
+        self.agent_timeout = agent_timeout or settings.agent_timeout
         self.enable_persistence = enable_persistence
         self.enable_auto_recovery = enable_auto_recovery
         self.planner_config = planner_config or PlannerConfig()
@@ -146,7 +146,7 @@ class MiniAime:
 
         # 主执行循环 (Steps 2-6)
         iteration_count = 0
-        max_iterations = 40  # 防止无限循环
+        max_iterations = settings.max_task_retries * 10  # 防止无限循环，基于重试次数动态调整
 
         while iteration_count < max_iterations:
             iteration_count += 1

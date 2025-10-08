@@ -9,6 +9,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppres
 from typing import Any
 
 from .base import BaseTool, ToolError
+from src.config.settings import settings
 
 
 class CodeExecutorTool(BaseTool):
@@ -20,7 +21,7 @@ class CodeExecutorTool(BaseTool):
 
     def __init__(
         self,
-        timeout: int = 30,
+        timeout: int = None,
         max_output_length: int = 10000,
         allowed_modules: list[str] | None = None,
         restricted_functions: list[str] | None = None,
@@ -35,7 +36,7 @@ class CodeExecutorTool(BaseTool):
             restricted_functions=restricted_functions or [],
         )
 
-        self.timeout = timeout
+        self.timeout = timeout or settings.code_execution_timeout
         self.max_output_length = max_output_length
         self.allowed_modules = set(allowed_modules or self._get_default_allowed_modules())
         self.restricted_functions = set(
@@ -66,7 +67,7 @@ class CodeExecutorTool(BaseTool):
             "pandas",
             "matplotlib",
             "seaborn",
-            "requests",  # 网络请求（受限）
+            "requests",
         ]
 
     def _get_default_restricted_functions(self) -> list[str]:

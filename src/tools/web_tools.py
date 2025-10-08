@@ -12,6 +12,7 @@ from langchain_tavily import TavilySearch
 
 from .base import BaseTool, ToolError
 from .rate_limiter import ExponentialBackoff, GlobalRateLimiter
+from src.config.settings import settings
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class WebSearchTool(BaseTool):
     def __init__(
         self,
         api_key: str | None = None,
-        max_results: int = 5,
+        max_results: int = None,
         search_depth: str = "advanced",
         include_answer: bool = True,
         include_raw_content: bool = False,
@@ -32,7 +33,7 @@ class WebSearchTool(BaseTool):
             name="web_search",
             description="使用 AI 优化的搜索引擎进行网络信息搜索",
             required_permissions=["internet_access"],
-            max_results=max_results,
+            max_results=max_results or settings.tavily_max_results,
             search_depth=search_depth,
             include_answer=include_answer,
             include_raw_content=include_raw_content,
@@ -183,7 +184,7 @@ class BraveSearchTool(BaseTool):
     def __init__(
         self,
         api_key: str | None = None,
-        max_results: int = 3,
+        max_results: int = None,
         country: str = "US",
         search_lang: str = "en",
         ui_lang: str = "en-US",
@@ -198,7 +199,7 @@ class BraveSearchTool(BaseTool):
             name="brave_search",
             description="使用 Brave Search API 进行网络信息搜索",
             required_permissions=["internet_access"],
-            max_results=max_results,
+            max_results=max_results or settings.brave_max_results,
             country=country,
             search_lang=search_lang,
             ui_lang=ui_lang,
@@ -321,7 +322,7 @@ class BraveSearchTool(BaseTool):
                 )
 
                 # 等待速率限制
-                await limiter.acquire(tokens=1, timeout=30.0)
+                await limiter.acquire(tokens=1, timeout=settings.web_request_timeout)
                 logger.debug(f"Brave Search rate limit acquired for query: {query[:50]}...")
 
                 start_time = time.time()
@@ -331,7 +332,7 @@ class BraveSearchTool(BaseTool):
                 response = await loop.run_in_executor(
                     None,
                     lambda: requests.get(
-                        self.base_url, headers=self.headers, params=params, timeout=30
+                        self.base_url, headers=self.headers, params=params, timeout=settings.web_request_timeout
                     ),
                 )
 
@@ -569,7 +570,7 @@ class WebContentExtractorTool(BaseTool):
             # 发送HTTP请求
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=settings.web_request_timeout)
             response.raise_for_status()
 
             # 解析HTML

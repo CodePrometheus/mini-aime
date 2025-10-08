@@ -44,6 +44,27 @@ class Settings(BaseSettings):
     default_tool_retry: int = Field(default=1, alias="DEFAULT_TOOL_RETRY")
     retry_backoff_ms: int = Field(default=800, alias="RETRY_BACKOFF_MS")
 
+    # 任务执行配置
+    max_task_depth: int = Field(default=1, alias="MAX_TASK_DEPTH")
+    max_parallel_tasks: int = Field(default=3, alias="MAX_PARALLEL_TASKS")
+    max_parallel_agents: int = Field(default=3, alias="MAX_PARALLEL_AGENTS")
+    agent_timeout: int = Field(default=300, alias="AGENT_TIMEOUT")
+    max_task_retries: int = Field(default=1, alias="MAX_TASK_RETRIES")
+
+    # 执行复杂度配置
+    low_complexity_max_iterations: int = Field(default=3, alias="LOW_COMPLEXITY_MAX_ITERATIONS")
+    medium_complexity_max_iterations: int = Field(default=5, alias="MEDIUM_COMPLEXITY_MAX_ITERATIONS")
+    high_complexity_max_iterations: int = Field(default=8, alias="HIGH_COMPLEXITY_MAX_ITERATIONS")
+    low_complexity_timeout: int = Field(default=120, alias="LOW_COMPLEXITY_TIMEOUT")
+    medium_complexity_timeout: int = Field(default=150, alias="MEDIUM_COMPLEXITY_TIMEOUT")
+    high_complexity_timeout: int = Field(default=200, alias="HIGH_COMPLEXITY_TIMEOUT")
+
+    # 工具配置
+    tavily_max_results: int = Field(default=5, alias="TAVILY_MAX_RESULTS")
+    brave_max_results: int = Field(default=3, alias="BRAVE_MAX_RESULTS")
+    code_execution_timeout: int = Field(default=30, alias="CODE_EXECUTION_TIMEOUT")
+    web_request_timeout: int = Field(default=10, alias="WEB_REQUEST_TIMEOUT")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

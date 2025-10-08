@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+from src.config.settings import settings
 
 
 class TaskStatus(Enum):
@@ -70,8 +71,8 @@ class TaskRequest(BaseModel):
     """任务请求模型（用于 API）。"""
 
     goal: str = Field(..., description="User goal description")
-    max_parallel_agents: int = Field(default=3, ge=1, le=10, description="Maximum parallel agents")
-    timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Task timeout in seconds")
+    max_parallel_agents: int = Field(default=None, ge=1, le=10, description="Maximum parallel agents")
+    timeout_seconds: int = Field(default=None, ge=30, le=3600, description="Task timeout in seconds")
 
 
 class TaskResponse(BaseModel):

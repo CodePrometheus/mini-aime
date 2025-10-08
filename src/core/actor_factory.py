@@ -17,6 +17,7 @@ from langchain_core.tools import StructuredTool, Tool
 from pydantic import BaseModel, Field
 
 from src.tools.file_tools import _find_project_root
+from src.config.settings import settings
 
 from ..llm.base import BaseLLMClient
 from ..tools.web_tools import BraveSearchTool
@@ -288,7 +289,7 @@ class ActorFactory:
 
             try:
                 # 调用天气 API
-                response = requests.get(base_url, params=params, timeout=10)
+                response = requests.get(base_url, params=params, timeout=settings.web_request_timeout)
 
                 if response.status_code == 200:
                     data = response.json()
@@ -315,7 +316,7 @@ class ActorFactory:
 
             base_url = f"https://v6.exchangerate-api.com/v6/{api_key}/pair/{from_currency.upper()}/{to_currency.upper()}/{amount}"
             try:
-                resp = requests.get(base_url, timeout=10)
+                resp = requests.get(base_url, timeout=settings.web_request_timeout)
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("result") == "success":
@@ -363,7 +364,7 @@ class ActorFactory:
 
             try:
                 resp = requests.get(
-                    "https://api.timezonedb.com/v2.1/get-time-zone", params=params, timeout=10
+                    "https://api.timezonedb.com/v2.1/get-time-zone", params=params, timeout=settings.web_request_timeout
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -390,7 +391,7 @@ class ActorFactory:
             base_url = os.getenv("NAGER_DATE_BASE_URL", "https://date.nager.at")
             url = f"{base_url}/api/v3/PublicHolidays/{year}/{country_code.upper()}"
             try:
-                resp = requests.get(url, timeout=10)
+                resp = requests.get(url, timeout=settings.web_request_timeout)
                 resp.raise_for_status()
                 data = resp.json()
                 if not isinstance(data, list):
@@ -1006,9 +1007,9 @@ class ActorFactory:
 
         # 根据复杂度调整参数 - 优化后的配置，减少步数以降低成本
         complexity_configs = {
-            "low": {"max_iterations": 3, "timeout": 120},
-            "medium": {"max_iterations": 5, "timeout": 150},
-            "high": {"max_iterations": 8, "timeout": 200},
+            "low": {"max_iterations": settings.low_complexity_max_iterations, "timeout": settings.low_complexity_timeout},
+            "medium": {"max_iterations": settings.medium_complexity_max_iterations, "timeout": settings.medium_complexity_timeout},
+            "high": {"max_iterations": settings.high_complexity_max_iterations, "timeout": settings.high_complexity_timeout},
         }
 
         config = complexity_configs.get(task_analysis.complexity, complexity_configs["medium"])

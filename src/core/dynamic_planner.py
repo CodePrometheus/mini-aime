@@ -8,6 +8,7 @@ from typing import Any
 
 from ..llm.base import BaseLLMClient
 from .models import ExecutionStep, Task, TaskStatus, UserEvent, UserEventType
+from src.config.settings import settings
 
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,13 @@ class PlannerConfig:
         enable_user_interaction: bool = False,
         max_clarification_rounds: int = 2,
         max_parallel_tasks: int = 3,
-        max_task_depth: int = 1,
+        max_task_depth: int = None,
     ):
         self.enable_user_clarification = enable_user_clarification
         self.enable_user_interaction = enable_user_interaction
         self.max_clarification_rounds = max_clarification_rounds
-        self.max_parallel_tasks = max_parallel_tasks
-        self.max_task_depth = max_task_depth
+        self.max_parallel_tasks = max_parallel_tasks or settings.max_parallel_tasks
+        self.max_task_depth = max_task_depth or settings.max_task_depth
 
 
 class DynamicPlanner:
