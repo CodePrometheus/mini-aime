@@ -234,14 +234,13 @@ class BraveSearchTool(BaseTool):
         self.text_decorations = text_decorations
         self.spellcheck = spellcheck
 
-        # 速率限制配置（优先级：参数 > 环境变量 > 默认值）
+        # 速率限制配置（优先级：参数 > 类级配置 > settings 配置）
         if rate_limit is not None:
             self.rate_limit = rate_limit
         elif BraveSearchTool._rate_limit is not None:
             self.rate_limit = BraveSearchTool._rate_limit
         else:
-            # 从环境变量读取，默认0.95 QPS（略低于1.0以留出安全边际）
-            self.rate_limit = float(os.getenv("BRAVE_SEARCH_RATE_LIMIT", "0.95"))
+            self.rate_limit = settings.brave_search_rate_limit
 
         # 重试配置
         if max_retries is not None:
@@ -249,12 +248,12 @@ class BraveSearchTool(BaseTool):
         elif BraveSearchTool._max_retries is not None:
             self.max_retries = BraveSearchTool._max_retries
         else:
-            self.max_retries = int(os.getenv("BRAVE_SEARCH_MAX_RETRIES", "3"))
+            self.max_retries = settings.brave_search_max_retries
 
         if BraveSearchTool._retry_base_delay is not None:
             self.retry_base_delay = BraveSearchTool._retry_base_delay
         else:
-            self.retry_base_delay = float(os.getenv("BRAVE_SEARCH_RETRY_BASE_DELAY", "2.0"))
+            self.retry_base_delay = settings.brave_search_retry_base_delay
 
         logger.debug(
             f"BraveSearchTool initialized: rate_limit={self.rate_limit} QPS, "

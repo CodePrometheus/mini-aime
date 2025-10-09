@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     code_execution_timeout: int = Field(default=30, alias="CODE_EXECUTION_TIMEOUT")
     web_request_timeout: int = Field(default=10, alias="WEB_REQUEST_TIMEOUT")
 
+    # Brave Search 速率限制配置
+    brave_search_rate_limit: float = Field(default=0.95, alias="BRAVE_SEARCH_RATE_LIMIT")
+    brave_search_max_retries: int = Field(default=3, alias="BRAVE_SEARCH_MAX_RETRIES")
+    brave_search_retry_base_delay: float = Field(default=2.0, alias="BRAVE_SEARCH_RETRY_BASE_DELAY")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
