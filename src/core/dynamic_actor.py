@@ -1,8 +1,10 @@
 """支持 ReAct 范式与 Function Calling 的动态智能体实现。"""
 
+import hashlib
 import json
 import logging
 import os
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -22,8 +24,6 @@ if not logger.handlers:
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
-
-CACHEABLE_TOOLS = {"read_file", "read_files", "list_directory"}
 
 CACHEABLE_TOOLS = {"read_file", "read_files", "list_directory"}
 
@@ -60,7 +60,9 @@ class DynamicActor:
 
         # 工具映射
         self.tool_map = {tool.name: tool for tool in tools}
-        self.tool_call_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        # Use OrderedDict for proper LRU cache behavior
+        self.tool_call_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._cache_max_size = 100  # Limit cache size to prevent memory bloat
 
     async def execute(self, progress_manager) -> dict[str, Any]:
         """
@@ -372,6 +374,8 @@ class DynamicActor:
             try:
                 if cache_key in self.tool_call_cache:
                     cached = self.tool_call_cache[cache_key]
+                    # Move to end for LRU behavior (most recently used)
+                    self.tool_call_cache.move_to_end(cache_key)
                     logger.info(
                         f"{ACTOR_LOG_PREFIX} tool_cache_hit actor={self.actor_id} name={function_name}"
                     )
@@ -1232,16 +1236,33 @@ Return JSON format:
 
         return "\n".join(formatted_lines)
 
-    def _build_cache_key(self, function_name: str, function_args: dict) -> str:
-        """构建工具调用的缓存键。"""
-        import hashlib
-        import json
-
-        # 创建包含函数名和参数的唯一键
-        cache_data = {"function": function_name, "args": function_args}
-
-        # 使用 JSON 序列化并生成哈希
-        cache_string = json.dumps(cache_data, sort_keys=True, ensure_ascii=False)
-        cache_hash = hashlib.md5(cache_string.encode("utf-8")).hexdigest()
-
-        return f"{function_name}:{cache_hash}"
+    def _build_cache_key(self, function_name: str, function_args: dict) -> str | None:
+        """构建工具调用的缓存键（优化版本）。"""
+        try:
+            # 对于可缓存的工具，使用简化的键生成策略
+            if function_name in CACHEABLE_TOOLS:
+                # 优化：直接使用参数的字符串表示而非JSON序列化
+                # 这样可以避免重复序列化的开销
+                if "path" in function_args or "file_path" in function_args:
+                    # 文件相关操作，使用路径作为键的主要部分
+                    path = function_args.get("path") or function_args.get("file_path", "")
+                    cache_key = f"{function_name}:{path}"
+                else:
+                    # 其他操作，使用简化的哈希
+                    args_str = str(sorted(function_args.items()))
+                    cache_hash = hashlib.md5(args_str.encode("utf-8")).hexdigest()[:16]  # 使用前16个字符即可
+                    cache_key = f"{function_name}:{cache_hash}"
+                
+                # 检查缓存大小并清理（使用OrderedDict的LRU特性）
+                if len(self.tool_call_cache) >= self._cache_max_size:
+                    # True LRU: Remove oldest 25% of entries from beginning
+                    # Note: To make this full LRU, we should move accessed items to end
+                    for _ in range(self._cache_max_size // 4):
+                        self.tool_call_cache.popitem(last=False)  # Remove from beginning (oldest)
+                
+                return cache_key
+            
+            return None  # 不可缓存的工具返回None
+        except Exception as e:
+            logger.warning(f"{ACTOR_LOG_PREFIX} cache_key_error function={function_name} error={e}")
+            return None

@@ -10,6 +10,13 @@ from typing import Any
 
 from .models import ProgressUpdate, SystemState, Task, TaskStatus, UserEvent
 
+# Try to import aiofiles for async file I/O, fallback to sync if unavailable
+try:
+    import aiofiles
+    AIOFILES_AVAILABLE = True
+except ImportError:
+    AIOFILES_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 PROG_LOG_PREFIX = "MiniAime|Progress|"
@@ -19,6 +26,7 @@ if not logger.handlers:
     _handler.setFormatter(_formatter)
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
+
 
 
 class ProgressManager:
@@ -37,11 +45,13 @@ class ProgressManager:
         # 智能体状态
         self.active_agents: dict[str, dict[str, Any]] = {}
 
-        # 历史记录
+        # 历史记录 (with size limits to prevent memory leaks)
         self.progress_history: list[ProgressUpdate] = []
+        self._max_progress_history = 1000  # Maximum number of progress updates to keep
         self.event_queue: asyncio.Queue = asyncio.Queue()
         self.user_event_queue: asyncio.Queue = asyncio.Queue()
         self.user_event_history: list[dict] = []  # 保存所有用户事件历史
+        self._max_event_history = 5000  # Maximum number of events to keep in memory
 
         # 系统状态
         self.system_start_time = datetime.now()
@@ -50,6 +60,8 @@ class ProgressManager:
 
         # 事件持久化
         self._event_history_file: str | None = None
+        self._save_batch_size = 100  # Save events in batches to reduce I/O
+        self._unsaved_events = 0  # Counter for unsaved events
 
     def set_session_id(self, session_id: str) -> None:
         """Set current session identifier for state snapshots."""
@@ -58,15 +70,27 @@ class ProgressManager:
         self._event_history_file = f"logs/events_{session_id}.json"
         self._load_event_history()
 
-    def _load_event_history(self) -> None:
-        """从文件加载事件历史"""
+    async def _load_event_history(self) -> None:
+        """从文件加载事件历史（异步版本）"""
         if not self._event_history_file:
             return
 
         try:
             if os.path.exists(self._event_history_file):
-                with open(self._event_history_file, encoding="utf-8") as f:
-                    self.user_event_history = json.load(f)
+                # Use async file I/O to avoid blocking
+                if AIOFILES_AVAILABLE:
+                    async with aiofiles.open(self._event_history_file, encoding="utf-8") as f:
+                        content = await f.read()
+                        self.user_event_history = json.loads(content)
+                else:
+                    # Fallback to sync if aiofiles not available
+                    self._load_event_history_sync()
+                    return
+                    
+                # Trim history to prevent memory issues
+                if len(self.user_event_history) > self._max_event_history:
+                    self.user_event_history = self.user_event_history[-self._max_event_history:]
+                    
                 logger.info(
                     f"{PROG_LOG_PREFIX} loaded_event_history file={self._event_history_file} count={len(self.user_event_history)}"
                 )
@@ -76,15 +100,42 @@ class ProgressManager:
             )
             self.user_event_history = []
 
-    def _save_event_history(self) -> None:
-        """保存事件历史到文件"""
+    def _load_event_history_sync(self) -> None:
+        """从文件加载事件历史（同步备用版本）"""
+        if not self._event_history_file or not os.path.exists(self._event_history_file):
+            return
+            
+        try:
+            with open(self._event_history_file, encoding="utf-8") as f:
+                self.user_event_history = json.load(f)
+                
+            # Trim history to prevent memory issues
+            if len(self.user_event_history) > self._max_event_history:
+                self.user_event_history = self.user_event_history[-self._max_event_history:]
+        except Exception as e:
+            logger.warning(
+                f"{PROG_LOG_PREFIX} failed_to_load_event_history_sync error={e}"
+            )
+            self.user_event_history = []
+
+    async def _save_event_history(self) -> None:
+        """保存事件历史到文件（异步版本，批量保存）"""
         if not self._event_history_file:
             return
 
         try:
             os.makedirs(os.path.dirname(self._event_history_file), exist_ok=True)
-            with open(self._event_history_file, "w", encoding="utf-8") as f:
-                json.dump(self.user_event_history, f, ensure_ascii=False, indent=2)
+            
+            # Use async file I/O to avoid blocking
+            if AIOFILES_AVAILABLE:
+                async with aiofiles.open(self._event_history_file, "w", encoding="utf-8") as f:
+                    await f.write(json.dumps(self.user_event_history, ensure_ascii=False, indent=2))
+            else:
+                # Fallback to sync if aiofiles not available
+                with open(self._event_history_file, "w", encoding="utf-8") as f:
+                    json.dump(self.user_event_history, f, ensure_ascii=False, indent=2)
+                    
+            self._unsaved_events = 0  # Reset counter after successful save
         except Exception as e:
             logger.error(
                 f"{PROG_LOG_PREFIX} failed_to_save_event_history file={self._event_history_file} error={e}"
@@ -193,9 +244,11 @@ class ProgressManager:
         # 记录历史
         self.progress_history.append(progress_update)
 
-        # 限制历史记录长度
-        if len(self.progress_history) > 1000:
-            self.progress_history = self.progress_history[-800:]  # 保留最近800条
+        # Limit history size to prevent memory leaks - use slice assignment for efficiency
+        if len(self.progress_history) > self._max_progress_history:
+            # Keep 80% when trimming using slice assignment to avoid creating new list
+            keep_size = int(self._max_progress_history * 0.8)
+            self.progress_history[:] = self.progress_history[-keep_size:]
 
         # 发送事件通知
         await self.event_queue.put(
@@ -243,29 +296,34 @@ class ProgressManager:
             self.active_agents[agent_id]["status"] = "completed"
 
     def _render_task_tree_markdown(self) -> str:
-        """将当前任务树渲染为 Markdown 树形结构。"""
+        """将当前任务树渲染为 Markdown 树形结构（优化版本）。"""
         if not self.task_tree:
             return ""
 
         lines: list[str] = []
+        
+        # Precompute status tokens for better performance
+        status_tokens = {
+            TaskStatus.COMPLETED: "[x]",
+            TaskStatus.FAILED: "[!]",
+            TaskStatus.IN_PROGRESS: "[-]",
+            TaskStatus.PENDING: "[ ]"
+        }
 
-        def status_token(s: TaskStatus) -> str:
-            if s == TaskStatus.COMPLETED:
-                return "[x]"
-            if s == TaskStatus.FAILED:
-                return "[!]"
-            if s == TaskStatus.IN_PROGRESS:
-                return "[-]"
-            return "[ ]"  # pending
-
-        def add_task_lines(task_list: list[Task], indent: int = 0):
+        # Use iterative approach with stack to avoid deep recursion
+        # Stack format: (task, indent_level)
+        stack = [(task, 0) for task in reversed(self.task_tree)]
+        
+        while stack:
+            task, indent = stack.pop()
             prefix = "  " * indent
-            for t in task_list:
-                lines.append(f"{prefix}- {status_token(t.status)} {t.description} ({t.id})")
-                if t.subtasks:
-                    add_task_lines(t.subtasks, indent + 1)
+            status_token = status_tokens.get(task.status, "[ ]")
+            lines.append(f"{prefix}- {status_token} {task.description} ({task.id})")
+            
+            # Add subtasks to stack in reverse order to maintain tree order
+            if task.subtasks:
+                stack.extend((st, indent + 1) for st in reversed(task.subtasks))
 
-        add_task_lines(self.task_tree, 0)
         return "\n".join(lines)
 
     async def submit_final_report(self, task_id: str, agent_id: str, report: dict[str, Any]):
@@ -323,21 +381,21 @@ class ProgressManager:
         )
 
     def get_current_state(self) -> SystemState:
-        """获取当前系统状态快照。"""
+        """获取当前系统状态快照（优化版本）。"""
 
-        # 基于任务树统计状态
+        # 基于任务树统计状态 - 使用迭代而非递归
         status_counts = {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0}
 
-        def count_tasks(task_list: list[Task]):
-            for task in task_list:
-                status_key = task.status.value
-                if status_key in status_counts:
-                    status_counts[status_key] += 1
-
-                if task.subtasks:
-                    count_tasks(task.subtasks)
-
-        count_tasks(self.task_tree)
+        # Use iterative traversal instead of recursion
+        stack = list(self.task_tree)
+        while stack:
+            task = stack.pop()
+            status_key = task.status.value
+            if status_key in status_counts:
+                status_counts[status_key] += 1
+            
+            if task.subtasks:
+                stack.extend(task.subtasks)
 
         # 获取活跃智能体列表（状态不是completed的智能体）
         active_agent_ids = [
@@ -346,7 +404,7 @@ class ProgressManager:
             if agent_info.get("status") != "completed"
         ]
 
-        # 获取最近的事件
+        # 获取最近的事件 - optimize slicing
         recent_events = [
             f"[{update.timestamp.strftime('%H:%M:%S')}] {update.message}"
             for update in self.progress_history[-10:]  # 最近10条
@@ -367,18 +425,27 @@ class ProgressManager:
             system_health = "critical"
 
         # Estimate completion time using recent completion rate (linear extrapolation)
-        completed_updates = [u.timestamp for u in self.progress_history if u.status == "completed"]
+        # Optimize by avoiding list comprehension for large histories
         estimated_completion_dt = None
         remaining_tasks = max(total_tasks - completed_tasks, 0)
-        if remaining_tasks > 0 and len(completed_updates) >= 2:
-            window_size = min(10, len(completed_updates))
-            window = completed_updates[-window_size:]
-            window_elapsed = (window[-1] - window[0]).total_seconds() or 1.0
-            completions_in_window = len(window)
-            rate_per_sec = completions_in_window / window_elapsed
-            if rate_per_sec > 0:
-                eta_seconds = remaining_tasks / rate_per_sec
-                estimated_completion_dt = datetime.now() + timedelta(seconds=eta_seconds)
+        if remaining_tasks > 0:
+            # Get completed updates more efficiently
+            completed_updates = []
+            for u in reversed(self.progress_history):
+                if u.status == "completed":
+                    completed_updates.append(u.timestamp)
+                    if len(completed_updates) >= 10:  # Only need last 10
+                        break
+            completed_updates.reverse()
+            
+            if len(completed_updates) >= 2:
+                window = completed_updates
+                window_elapsed = (window[-1] - window[0]).total_seconds() or 1.0
+                completions_in_window = len(window)
+                rate_per_sec = completions_in_window / window_elapsed
+                if rate_per_sec > 0:
+                    eta_seconds = remaining_tasks / rate_per_sec
+                    estimated_completion_dt = datetime.now() + timedelta(seconds=eta_seconds)
 
         return SystemState(
             timestamp=datetime.now(),
