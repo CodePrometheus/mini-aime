@@ -374,6 +374,8 @@ class DynamicActor:
             try:
                 if cache_key in self.tool_call_cache:
                     cached = self.tool_call_cache[cache_key]
+                    # Move to end for LRU behavior (most recently used)
+                    self.tool_call_cache.move_to_end(cache_key)
                     logger.info(
                         f"{ACTOR_LOG_PREFIX} tool_cache_hit actor={self.actor_id} name={function_name}"
                     )
@@ -1236,8 +1238,6 @@ Return JSON format:
 
     def _build_cache_key(self, function_name: str, function_args: dict) -> str | None:
         """构建工具调用的缓存键（优化版本）。"""
-        import hashlib
-        
         try:
             # 对于可缓存的工具，使用简化的键生成策略
             if function_name in CACHEABLE_TOOLS:
@@ -1255,7 +1255,8 @@ Return JSON format:
                 
                 # 检查缓存大小并清理（使用OrderedDict的LRU特性）
                 if len(self.tool_call_cache) >= self._cache_max_size:
-                    # Remove oldest 25% of entries (FIFO approximation of LRU)
+                    # True LRU: Remove oldest 25% of entries from beginning
+                    # Note: To make this full LRU, we should move accessed items to end
                     for _ in range(self._cache_max_size // 4):
                         self.tool_call_cache.popitem(last=False)  # Remove from beginning (oldest)
                 
