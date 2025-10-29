@@ -632,21 +632,13 @@ class DynamicPlanner:
         return "\n".join(lines)
 
     def _apply_task_updates(self, current_tasks: list[Task], updates: list[dict]) -> list[Task]:
-        """将 LLM 生成的任务更新应用到任务树。"""
+        """将 LLM 生成的任务更新应用到任务树（优化版本）。"""
         # 任务数量限制检查
         MAX_TOTAL_TASKS = 15
         MAX_SINGLE_UPDATE_TASKS = 5
         
-        # 计算当前总任务数（包括子任务）
-        def count_all_tasks(tasks: list[Task]) -> int:
-            total = 0
-            for task in tasks:
-                total += 1
-                if task.subtasks:
-                    total += count_all_tasks(task.subtasks)
-            return total
-        
-        current_total = count_all_tasks(current_tasks)
+        # 使用迭代计算总任务数，避免递归开销
+        current_total = self._count_tasks_iterative(current_tasks)
         
         # 计算本次更新要添加的任务数
         add_updates = [u for u in updates if u.get("action") == "add"]
@@ -1009,6 +1001,17 @@ class DynamicPlanner:
             ),
             "planning_decisions": len(self.planning_history),
         }
+
+    def _count_tasks_iterative(self, tasks: list[Task]) -> int:
+        """使用迭代方式计算任务总数，避免递归开销。"""
+        total = 0
+        stack = list(tasks)
+        while stack:
+            task = stack.pop()
+            total += 1
+            if task.subtasks:
+                stack.extend(task.subtasks)
+        return total
 
     def _get_all_tasks(self) -> list[Task]:
         """从任务树拉平成列表以获取全部任务。"""

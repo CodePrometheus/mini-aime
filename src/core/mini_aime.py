@@ -997,17 +997,18 @@ class MiniAime:
 
     def _flatten_task_tree(self, tasks: list[Task]) -> list[Task]:
         """
-        将任务树展平为列表。
+        将任务树展平为列表（使用迭代而非递归，避免深度递归开销）。
         """
         result = []
-
-        def traverse(task_list: list[Task]):
-            for task in task_list:
-                result.append(task)
-                if task.subtasks:
-                    traverse(task.subtasks)
-
-        traverse(tasks)
+        stack = list(tasks)
+        
+        while stack:
+            task = stack.pop()
+            result.append(task)
+            if task.subtasks:
+                # 逆序添加以保持原始顺序
+                stack.extend(reversed(task.subtasks))
+        
         return result
 
     def _has_summary_task(self) -> bool:

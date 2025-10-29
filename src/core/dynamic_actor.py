@@ -60,7 +60,8 @@ class DynamicActor:
 
         # 工具映射
         self.tool_map = {tool.name: tool for tool in tools}
-        self.tool_call_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self.tool_call_cache: dict[str, dict[str, Any]] = {}  # Changed from tuple to str for better cache key management
+        self._cache_max_size = 100  # Limit cache size to prevent memory bloat
 
     async def execute(self, progress_manager) -> dict[str, Any]:
         """
@@ -1232,16 +1233,35 @@ Return JSON format:
 
         return "\n".join(formatted_lines)
 
-    def _build_cache_key(self, function_name: str, function_args: dict) -> str:
-        """构建工具调用的缓存键。"""
+    def _build_cache_key(self, function_name: str, function_args: dict) -> str | None:
+        """构建工具调用的缓存键（优化版本）。"""
         import hashlib
-        import json
-
-        # 创建包含函数名和参数的唯一键
-        cache_data = {"function": function_name, "args": function_args}
-
-        # 使用 JSON 序列化并生成哈希
-        cache_string = json.dumps(cache_data, sort_keys=True, ensure_ascii=False)
-        cache_hash = hashlib.md5(cache_string.encode("utf-8")).hexdigest()
-
-        return f"{function_name}:{cache_hash}"
+        
+        try:
+            # 对于可缓存的工具，使用简化的键生成策略
+            if function_name in CACHEABLE_TOOLS:
+                # 优化：直接使用参数的字符串表示而非JSON序列化
+                # 这样可以避免重复序列化的开销
+                if "path" in function_args or "file_path" in function_args:
+                    # 文件相关操作，使用路径作为键的主要部分
+                    path = function_args.get("path") or function_args.get("file_path", "")
+                    cache_key = f"{function_name}:{path}"
+                else:
+                    # 其他操作，使用简化的哈希
+                    args_str = str(sorted(function_args.items()))
+                    cache_hash = hashlib.md5(args_str.encode("utf-8")).hexdigest()[:16]  # 使用前16个字符即可
+                    cache_key = f"{function_name}:{cache_hash}"
+                
+                # 检查缓存大小并清理
+                if len(self.tool_call_cache) >= self._cache_max_size:
+                    # LRU-like cleanup: remove oldest entries
+                    keys_to_remove = list(self.tool_call_cache.keys())[: self._cache_max_size // 4]
+                    for key in keys_to_remove:
+                        del self.tool_call_cache[key]
+                
+                return cache_key
+            
+            return None  # 不可缓存的工具返回None
+        except Exception as e:
+            logger.warning(f"{ACTOR_LOG_PREFIX} cache_key_error function={function_name} error={e}")
+            return None
