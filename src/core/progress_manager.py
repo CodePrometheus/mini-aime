@@ -10,6 +10,13 @@ from typing import Any
 
 from .models import ProgressUpdate, SystemState, Task, TaskStatus, UserEvent
 
+# Try to import aiofiles for async file I/O, fallback to sync if unavailable
+try:
+    import aiofiles
+    AIOFILES_AVAILABLE = True
+except ImportError:
+    AIOFILES_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 PROG_LOG_PREFIX = "MiniAime|Progress|"
@@ -19,6 +26,7 @@ if not logger.handlers:
     _handler.setFormatter(_formatter)
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
+
 
 
 class ProgressManager:
@@ -70,11 +78,14 @@ class ProgressManager:
         try:
             if os.path.exists(self._event_history_file):
                 # Use async file I/O to avoid blocking
-                import aiofiles
-                
-                async with aiofiles.open(self._event_history_file, encoding="utf-8") as f:
-                    content = await f.read()
-                    self.user_event_history = json.loads(content)
+                if AIOFILES_AVAILABLE:
+                    async with aiofiles.open(self._event_history_file, encoding="utf-8") as f:
+                        content = await f.read()
+                        self.user_event_history = json.loads(content)
+                else:
+                    # Fallback to sync if aiofiles not available
+                    self._load_event_history_sync()
+                    return
                     
                 # Trim history to prevent memory issues
                 if len(self.user_event_history) > self._max_event_history:
@@ -83,9 +94,6 @@ class ProgressManager:
                 logger.info(
                     f"{PROG_LOG_PREFIX} loaded_event_history file={self._event_history_file} count={len(self.user_event_history)}"
                 )
-        except ImportError:
-            # Fallback to sync if aiofiles not available
-            self._load_event_history_sync()
         except Exception as e:
             logger.warning(
                 f"{PROG_LOG_PREFIX} failed_to_load_event_history file={self._event_history_file} error={e}"
@@ -119,12 +127,10 @@ class ProgressManager:
             os.makedirs(os.path.dirname(self._event_history_file), exist_ok=True)
             
             # Use async file I/O to avoid blocking
-            try:
-                import aiofiles
-                
+            if AIOFILES_AVAILABLE:
                 async with aiofiles.open(self._event_history_file, "w", encoding="utf-8") as f:
                     await f.write(json.dumps(self.user_event_history, ensure_ascii=False, indent=2))
-            except ImportError:
+            else:
                 # Fallback to sync if aiofiles not available
                 with open(self._event_history_file, "w", encoding="utf-8") as f:
                     json.dump(self.user_event_history, f, ensure_ascii=False, indent=2)
@@ -238,9 +244,11 @@ class ProgressManager:
         # 记录历史
         self.progress_history.append(progress_update)
 
-        # Limit history size to prevent memory leaks
+        # Limit history size to prevent memory leaks - use slice assignment for efficiency
         if len(self.progress_history) > self._max_progress_history:
-            self.progress_history = self.progress_history[-int(self._max_progress_history * 0.8):]  # Keep 80% when trimming
+            # Keep 80% when trimming using slice assignment to avoid creating new list
+            keep_size = int(self._max_progress_history * 0.8)
+            self.progress_history[:] = self.progress_history[-keep_size:]
 
         # 发送事件通知
         await self.event_queue.put(

@@ -1,8 +1,10 @@
 """支持 ReAct 范式与 Function Calling 的动态智能体实现。"""
 
+import hashlib
 import json
 import logging
 import os
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -22,8 +24,6 @@ if not logger.handlers:
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
-
-CACHEABLE_TOOLS = {"read_file", "read_files", "list_directory"}
 
 CACHEABLE_TOOLS = {"read_file", "read_files", "list_directory"}
 
@@ -60,7 +60,8 @@ class DynamicActor:
 
         # 工具映射
         self.tool_map = {tool.name: tool for tool in tools}
-        self.tool_call_cache: dict[str, dict[str, Any]] = {}  # Changed from tuple to str for better cache key management
+        # Use OrderedDict for proper LRU cache behavior
+        self.tool_call_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._cache_max_size = 100  # Limit cache size to prevent memory bloat
 
     async def execute(self, progress_manager) -> dict[str, Any]:
@@ -1252,12 +1253,11 @@ Return JSON format:
                     cache_hash = hashlib.md5(args_str.encode("utf-8")).hexdigest()[:16]  # 使用前16个字符即可
                     cache_key = f"{function_name}:{cache_hash}"
                 
-                # 检查缓存大小并清理
+                # 检查缓存大小并清理（使用OrderedDict的LRU特性）
                 if len(self.tool_call_cache) >= self._cache_max_size:
-                    # LRU-like cleanup: remove oldest entries
-                    keys_to_remove = list(self.tool_call_cache.keys())[: self._cache_max_size // 4]
-                    for key in keys_to_remove:
-                        del self.tool_call_cache[key]
+                    # Remove oldest 25% of entries (FIFO approximation of LRU)
+                    for _ in range(self._cache_max_size // 4):
+                        self.tool_call_cache.popitem(last=False)  # Remove from beginning (oldest)
                 
                 return cache_key
             
